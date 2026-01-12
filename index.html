@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brain Wall Challenge! / 脳カベなど</title>
+    <!-- MediaPipe Pose -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"
+        crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #222;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        video {
+            display: none;
+            /* Hide raw video */
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            /* Mirror effect */
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        #hud {
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 2rem;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            font-weight: bold;
+        }
+
+        #score-display {
+            color: #ffcc00;
+        }
+
+        #message-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            pointer-events: auto;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 40px;
+            border-radius: 20px;
+            border: 4px solid #fff;
+        }
+
+        h1 {
+            font-size: 4rem;
+            margin: 0 0 20px 0;
+            color: #ff0055;
+            text-transform: uppercase;
+            letter-spacing: 5px;
+            transform: skew(-10deg);
+        }
+
+        p {
+            font-size: 1.5rem;
+            margin-bottom: 30px;
+        }
+
+        button {
+            background: linear-gradient(45deg, #ff0055, #ffcc00);
+            border: none;
+            padding: 15px 40px;
+            font-size: 2rem;
+            color: white;
+            font-weight: bold;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 5px 15px rgba(255, 0, 85, 0.4);
+        }
+
+        button:hover {
+            transform: scale(1.1);
+            box-shadow: 0 8px 20px rgba(255, 0, 85, 0.6);
+        }
+
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="game-container">
+        <video id="input_video"></video>
+        <canvas id="output_canvas"></canvas>
+
+        <div id="ui-layer">
+            <div id="hud">
+                <div id="score-display">SCORE: 0</div>
+                <div id="lives-display">❤️❤️❤️</div>
+            </div>
+        </div>
+
+        <!-- Start / Game Over Screen -->
+        <div id="message-overlay">
+            <h1 id="title-text">BRAIN WALL</h1>
+            <p id="status-text">Allow camera access to play!</p>
+            <button id="start-btn" disabled>LOADING AI...</button>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. CONFIG OBJECT ---
+        const GAME_CONFIG = {
+            poses: ['Y', 'I', 'SQUAT', 'X', 'T', 'MUSCLE', 'FLAMINGO', 'TRIANGLE'],
+            hitThreshold: 5,
+            initialSpeed: 5.0,       // Wall speed
+            // maxSpeed removed (Unlimited)
+            speedIncrement: 1.0,     // Speed up per clear
+            spawnInterval: 2000,     // Time between walls (Waiting period) in ms
+            judgementFrameCount: 5,  // Not strictly used with current Z-logic, but conceptually good
+            wallStartZ: 100          // Start distance
+        };
+
+        const EFFECT_DURATION = 60; // Frames (approx 1 sec)
+
+        // --- GLOBALS ---
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const startBtn = document.getElementById('start-btn');
+        const statusText = document.getElementById('status-text');
+        const titleText = document.getElementById('title-text');
+        const messageOverlay = document.getElementById('message-overlay');
+        const scoreDisplay = document.getElementById('score-display');
+        const livesDisplay = document.getElementById('lives-display');
+
+        // Game State
+        let gameState = 'LOADING'; // LOADING, MENU, PLAYING, GAMEOVER
+        let subState = 'WAIT';     // WAIT, ACTION, RESULT (Managed within PLAYING)
+
+        let score = 0;
+        let lives = 3;
+        let lastTime = 0;
+
+        let currentSpeed = GAME_CONFIG.initialSpeed;
+        let spawnTimer = 0; // ms
+
+        let currentWall = null;
+        let latestResults = null;
+
+        // --- EFFECT STATE ---
+        let effectState = {
+            type: null,        // 'clear', 'miss', or null
+            timer: 0,          // Frames
+            shakeIntensity: 0  // Pixel offset
+        };
+
+        // --- SOUND ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playSound(type) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            if (type === 'bgm-start') {
+                // Placeholder
+            } else if (type === 'success') {
+                osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.3);
+            } else if (type === 'crash') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(100, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(30, audioCtx.currentTime + 0.4);
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.4);
+            }
+        }
+
+        // --- MEDIA PIPE ---
+        function onResults(results) {
+            latestResults = results;
+            if (gameState === 'LOADING') {
+                gameState = 'MENU';
+                statusText.innerText = "Are you ready?";
+                startBtn.innerText = "START GAME";
+                startBtn.disabled = false;
+            }
+        }
+
+        const pose = new Pose({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
+        pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, enableSegmentation: false, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        pose.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({ image: videoElement }); },
+            width: 1280, height: 720
+        });
+        camera.start();
+
+        // --- GAME CLASSES ---
+        class Wall {
+            constructor() {
+                this.z = GAME_CONFIG.wallStartZ;
+                this.type = GAME_CONFIG.poses[Math.floor(Math.random() * GAME_CONFIG.poses.length)];
+                this.color = `hsl(${Math.random() * 360}, 70%, 50%)`;
+            }
+
+            update(dt) {
+                // Config-based speed
+                // dt is in ms. Speed is unit/sec? Let's treat Speed as unit per second.
+                this.z -= currentSpeed * (dt / 1000) * 5; // Adjust multiplier to feel right
+            }
+
+            draw(ctx, width, height) {
+                const maxZ = GAME_CONFIG.wallStartZ;
+                let progress = 1 - (this.z / maxZ);
+                if (progress < 0) return;
+
+                // Perspective
+                const scale = Math.pow(progress, 2) * 5 + 0.1;
+
+                ctx.save();
+                ctx.translate(width / 2, height / 2);
+                ctx.scale(scale, scale);
+
+                ctx.fillStyle = "rgba(255, 50, 50, 0.8)";
+                ctx.beginPath();
+                const HUGE = 10000;
+                ctx.rect(-HUGE / 2, -HUGE / 2, HUGE, HUGE);
+
+                this.pathHole(ctx, this.type);
+
+                ctx.closePath();
+                ctx.fill("evenodd");
+
+                ctx.strokeStyle = "#fff";
+                ctx.lineWidth = 4 / scale;
+                ctx.stroke();
+
+                ctx.scale(1, -1);
+                ctx.fillStyle = "white";
+                ctx.font = "20px Arial";
+                ctx.textAlign = "center";
+                ctx.fillText(this.targetPoseName(this.type), 0, -120);
+
+                ctx.restore();
+            }
+
+            targetPoseName(type) {
+                switch (type) {
+                    case 'Y': return "Y-POSE!";
+                    case 'I': return "I-POSE!";
+                    case 'SQUAT': return "SQUAT DOWN!";
+                    case 'X': return "X-POSE!";
+                    case 'T': return "T-POSE!";
+                    case 'MUSCLE': return "MUSCLE!";
+                    case 'FLAMINGO': return "FLAMINGO!";
+                    case 'TRIANGLE': return "TRIANGLE!";
+                    default: return "";
+                }
+            }
+
+            pathHole(ctx, type) {
+                if (type === 'Y') {
+                    ctx.rect(-20, -20, 40, 100);
+                    ctx.moveTo(-20, -20);
+                    ctx.lineTo(-80, -100);
+                    ctx.lineTo(-50, -100);
+                    ctx.lineTo(0, -40);
+                    ctx.lineTo(50, -100);
+                    ctx.lineTo(80, -100);
+                    ctx.lineTo(20, -20);
+                }
+                else if (type === 'I') {
+                    ctx.rect(-25, -120, 50, 240);
+                }
+                else if (type === 'SQUAT') {
+                    ctx.rect(-60, 20, 120, 100);
+                } else if (type === 'X') {
+                    // X shape
+                    ctx.moveTo(-80, -100); ctx.lineTo(-20, 0); ctx.lineTo(-80, 100);
+                    ctx.lineTo(-40, 100); ctx.lineTo(0, 20); ctx.lineTo(40, 100);
+                    ctx.lineTo(80, 100); ctx.lineTo(20, 0); ctx.lineTo(80, -100);
+                    ctx.lineTo(40, -100); ctx.lineTo(0, -20); ctx.lineTo(-40, -100);
+                } else if (type === 'T') {
+                    // T shape
+                    ctx.rect(-20, -100, 40, 200); // Vert
+                    ctx.rect(-80, -80, 160, 40); // Horiz
+                } else if (type === 'MUSCLE') {
+                    // Muscle arms up
+                    ctx.rect(-30, -100, 60, 200); // Body
+                    ctx.rect(-80, -100, 40, 60); // L Arm Up
+                    ctx.rect(40, -100, 40, 60); // R Arm Up
+                    // Connectors
+                    ctx.rect(-80, -40, 160, 20);
+                } else if (type === 'FLAMINGO') {
+                    // One leg up
+                    ctx.rect(-30, -100, 60, 100); // Body
+                    ctx.rect(-10, 0, 20, 100); // Leg Center? No, just one leg
+                    // Make it look like standing on one leg
+                    ctx.rect(-15, 0, 30, 100);
+                } else if (type === 'TRIANGLE') {
+                    // Diamond/Triangle on hips
+                    ctx.moveTo(0, -120); ctx.lineTo(-60, -40); ctx.lineTo(0, 40); ctx.lineTo(60, -40);
+                    ctx.rect(-20, -40, 40, 140); // Legs/Body
+                }
+            }
+        }
+
+        function checkCollision(wall, landmarks) {
+            const nose = landmarks[0];
+            const lWrist = landmarks[15];
+            const rWrist = landmarks[16];
+            const lShoulder = landmarks[11];
+            const rShoulder = landmarks[12];
+            const lHip = landmarks[23];
+            const rHip = landmarks[24];
+
+            if (wall.type === 'Y') {
+                const handsUp = lWrist.y < nose.y && rWrist.y < nose.y;
+                return handsUp;
+            }
+            else if (wall.type === 'I') {
+                // Relaxed I-pose: Allow hands to be slightly above hip level (hip.y - 0.1)
+                const handsDown = lWrist.y > (lHip.y - 0.1) && rWrist.y > (rHip.y - 0.1);
+                // Widened X threshold to 0.25
+                const handsIn = Math.abs(lWrist.x - lHip.x) < 0.25 && Math.abs(rWrist.x - rHip.x) < 0.25;
+                return handsDown && handsIn;
+            }
+            else if (wall.type === 'SQUAT') {
+                return nose.y > 0.4;
+            } else if (wall.type === 'X') {
+                // Wrists above Nose
+                const handsUp = lWrist.y < nose.y && rWrist.y < nose.y;
+                // Wide Arms (X > Shoulders significantly)
+                const armsWide = lWrist.x > lShoulder.x && rWrist.x < rShoulder.x; // Mirror?
+                // Wait, landmarks x: 0 is left side of image. If mirrored, it's user's right.
+                // Left Wrist (person's left) should be X > Left Shoulder (person's left).
+                // Actually, let's just check absolute width > shoulder width * 1.5
+                const shoulderWidth = Math.abs(lShoulder.x - rShoulder.x);
+                const wristWidth = Math.abs(lWrist.x - rWrist.x);
+
+                // Ankles Wide
+                const lAnkle = landmarks[27];
+                const rAnkle = landmarks[28];
+                const ankleWidth = Math.abs(lAnkle.x - rAnkle.x);
+
+                return handsUp && (wristWidth > shoulderWidth * 1.2) && (ankleWidth > shoulderWidth * 1.2);
+            } else if (wall.type === 'T') {
+                // Wrist Y ~ Shoulder Y
+                const yDiff = Math.abs(lWrist.y - lShoulder.y) < 0.15 && Math.abs(rWrist.y - rShoulder.y) < 0.15;
+                // Wide
+                const shoulderWidth = Math.abs(lShoulder.x - rShoulder.x);
+                const wristWidth = Math.abs(lWrist.x - rWrist.x);
+                return yDiff && (wristWidth > shoulderWidth * 2.0);
+            } else if (wall.type === 'MUSCLE') {
+                // Elbows ~ Shoulders Y
+                const lElbow = landmarks[13];
+                const rElbow = landmarks[14];
+                const elbowLevel = Math.abs(lElbow.y - lShoulder.y) < 0.2;
+                // Wrists < Elbows (Higher)
+                const armsUp = lWrist.y < lElbow.y && rWrist.y < rElbow.y;
+                return elbowLevel && armsUp;
+            } else if (wall.type === 'FLAMINGO') {
+                // One ankle significantly higher than other
+                const lAnkle = landmarks[27];
+                const rAnkle = landmarks[28];
+                const diff = Math.abs(lAnkle.y - rAnkle.y);
+                // 0.1 is significant? Standing is near 0.
+                return diff > 0.1;
+            } else if (wall.type === 'TRIANGLE') {
+                // Wrists near Hips
+                const lHandHip = Math.dist(lWrist.x, lWrist.y, lHip.x, lHip.y) < 0.2;
+                const rHandHip = Math.dist(rWrist.x, rWrist.y, rHip.x, rHip.y) < 0.2;
+                // Elbows out? (Check elbow X is outside shoulder/hip line)
+                // Or just hands on hips is enough.
+                return lHandHip && rHandHip;
+            }
+            return false;
+        }
+
+        // Helper for independent math (Math.dist not builtin)
+        Math.dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+
+        // --- GAME PLAY FUNCTIONS ---
+
+        function triggerEffect(result) {
+            if (result === 'clear') {
+                effectState.type = 'clear';
+                effectState.timer = EFFECT_DURATION;
+                effectState.shakeIntensity = 0;
+                playSound('success');
+
+                // Difficulty Increase (Unlimited)
+                currentSpeed += GAME_CONFIG.speedIncrement;
+
+            } else {
+                effectState.type = 'miss';
+                effectState.timer = EFFECT_DURATION;
+                effectState.shakeIntensity = 20;
+                playSound('crash');
+            }
+        }
+
+        function drawEffectsAndUI(ctx, width, height) {
+            if (effectState.timer > 0) {
+                // A. Shake (Handled in main loop before this, well, we can't un-draw video. 
+                // So Shake must apply to Everything or just UI? 
+                // PROMPT said: "Canvas 전체をランダムにずらして". This implies we should have translated BEFORE drawing video.
+                // But we can't change the past. 
+                // Effectively, we should move the shake logic to start of gameLoop. 
+                // I will implement that in gameLoop structure.
+
+                // B. Flash
+                ctx.save();
+                ctx.scale(-1, 1); // Un-mirror for overlay
+                ctx.translate(-width, 0);
+
+                // Flash Color
+                let alpha = (effectState.timer / EFFECT_DURATION) * 0.6;
+                if (effectState.type === 'clear') {
+                    ctx.fillStyle = `rgba(0, 255, 100, ${alpha})`;
+                } else {
+                    ctx.fillStyle = `rgba(255, 50, 50, ${alpha})`;
+                }
+                ctx.fillRect(0, 0, width, height);
+
+                // C. Text
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.font = "italic 900 100px Arial";
+                ctx.lineWidth = 5;
+                ctx.strokeStyle = "white";
+
+                if (effectState.type === 'clear') {
+                    ctx.fillStyle = "#00cc44";
+                    ctx.strokeText("COOL!", width / 2, height / 2);
+                    ctx.fillText("COOL!", width / 2, height / 2);
+                } else {
+                    ctx.fillStyle = "#cc0000";
+                    ctx.strokeText("MISS...", width / 2, height / 2);
+                    ctx.fillText("MISS...", width / 2, height / 2);
+                }
+
+                ctx.restore();
+
+                // D. Update Timer
+                effectState.timer--;
+                if (effectState.shakeIntensity > 0) effectState.shakeIntensity *= 0.9; // Damping
+            }
+
+            // Draw Countdown/Status if waiting
+            if (subState === 'WAIT') {
+                ctx.save();
+                ctx.scale(-1, 1);
+                ctx.translate(-width, 0);
+
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillStyle = "white";
+                ctx.font = "bold 60px Arial";
+                ctx.shadowColor = "black";
+                ctx.shadowBlur = 10;
+
+                let timeLeft = Math.ceil(spawnTimer / 1000);
+                if (timeLeft > 0) {
+                    ctx.fillText(`NEXT WALL IN ${timeLeft}...`, width / 2, height / 3);
+                } else {
+                    ctx.fillText("READY?", width / 2, height / 3);
+                }
+
+                // Draw Current Speed
+                ctx.font = "bold 30px Arial";
+                ctx.fillText(`LEVEL: ${currentSpeed.toFixed(1)}`, width / 2, height / 3 + 60);
+
+                ctx.restore();
+            }
+        }
+
+        // --- MAIN LOOP ---
+        function gameLoop(timestamp) {
+            const dt = timestamp - lastTime || 0;
+            lastTime = timestamp;
+
+            // Resize
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+            const w = canvasElement.width;
+            const h = canvasElement.height;
+
+            // --- SHAKE LOGIC START ---
+            canvasCtx.save();
+            if (effectState.timer > 0 && effectState.shakeIntensity > 0) {
+                const dx = (Math.random() - 0.5) * effectState.shakeIntensity;
+                const dy = (Math.random() - 0.5) * effectState.shakeIntensity;
+                canvasCtx.translate(dx, dy);
+            }
+
+            // Clear
+            canvasCtx.clearRect(0, 0, w, h);
+
+            // Draw Video (Mirrored context)
+            canvasCtx.save();
+            canvasCtx.scale(-1, 1);
+            canvasCtx.translate(-w, 0);
+            canvasCtx.drawImage(videoElement, 0, 0, w, h);
+            canvasCtx.restore();
+
+            // Draw Skeleton
+            // Note: Skeleton coords are 0-1. drawConnectors uses them.
+            // We need to apply mirror transform for them to match video.
+            canvasCtx.save();
+            canvasCtx.scale(-1, 1);
+            canvasCtx.translate(-w, 0);
+            if (latestResults && latestResults.poseLandmarks) {
+                drawConnectors(canvasCtx, latestResults.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
+                drawLandmarks(canvasCtx, latestResults.poseLandmarks, { color: '#FF0000', lineWidth: 2 });
+            }
+            canvasCtx.restore(); // Logic uses normalized, Drawing uses screen.
+
+            // --- GAME LOGIC ---
+            if (gameState === 'PLAYING') {
+
+                // Re-apply mirror for World Objects (Wall)
+                canvasCtx.save();
+                canvasCtx.scale(-1, 1);
+                canvasCtx.translate(-w, 0);
+
+                // State Machine
+                if (subState === 'WAIT') {
+                    spawnTimer -= dt;
+                    if (spawnTimer <= 0) {
+                        subState = 'ACTION';
+                        currentWall = new Wall();
+                    }
+                }
+                else if (subState === 'ACTION') {
+                    if (currentWall) {
+                        currentWall.update(dt);
+                        currentWall.draw(canvasCtx, w, h);
+
+                        // Check Collision/Pass
+                        if (currentWall.z <= 0) {
+                            let success = false;
+                            if (latestResults && latestResults.poseLandmarks) {
+                                success = checkCollision(currentWall, latestResults.poseLandmarks);
+                            }
+
+                            // Result Processing
+                            if (success) {
+                                score++;
+                                scoreDisplay.innerText = "SCORE: " + score;
+                                triggerEffect('clear');
+                            } else {
+                                lives--;
+                                updateLives();
+                                triggerEffect('miss');
+                                if (lives <= 0) {
+                                    gameOver();
+                                }
+                            }
+
+                            // Transition
+                            currentWall = null;
+                            subState = 'WAIT';
+                            spawnTimer = GAME_CONFIG.spawnInterval;
+                        }
+                    }
+                }
+                canvasCtx.restore();
+            }
+
+            // --- EFFECT OVERLAY (No Mirror needed usually, handled inside) ---
+            drawEffectsAndUI(canvasCtx, w, h);
+
+            canvasCtx.restore(); // Undo Shake
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function updateLives() {
+            let s = "";
+            for (let i = 0; i < lives; i++) s += "❤️";
+            livesDisplay.innerText = s;
+        }
+
+        function gameOver() {
+            gameState = 'GAMEOVER';
+            messageOverlay.style.display = 'block';
+            titleText.innerText = "GAME OVER";
+            statusText.innerText = "Final Score: " + score;
+            startBtn.innerText = "TRY AGAIN";
+        }
+
+        function startGame() {
+            score = 0;
+            lives = 3;
+            currentSpeed = GAME_CONFIG.initialSpeed;
+            spawnTimer = 2000; // Initial delay
+
+            scoreDisplay.innerText = "SCORE: " + score;
+            updateLives();
+            messageOverlay.style.display = 'none';
+
+            gameState = 'PLAYING';
+            subState = 'WAIT';
+
+            playSound('bgm-start');
+        }
+
+        startBtn.addEventListener('click', () => {
+            startGame();
+        });
+
+        requestAnimationFrame(gameLoop);
+
+    </script>
+</body>
+
+</html>
