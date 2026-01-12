@@ -42,8 +42,8 @@
             width: 100%;
             height: 100%;
             object-fit: cover;
-            transform: scaleX(-1);
-            /* Mirror effect */
+            object-fit: cover;
+            /* transform: scaleX(-1); REMOVED - Handled in JS */
         }
 
         #ui-layer {
@@ -149,7 +149,7 @@
     <script>
         // --- 1. CONFIG OBJECT ---
         const GAME_CONFIG = {
-            poses: ['Y', 'I', 'SQUAT', 'X', 'T', 'MUSCLE', 'FLAMINGO', 'TRIANGLE'],
+            poses: ['Y', 'I', 'SQUAT', 'X', 'T', 'FLAMINGO', 'SUMO', 'KICK'],
             hitThreshold: 5,
             initialSpeed: 5.0,       // Wall speed
             // maxSpeed removed (Unlimited)
@@ -250,6 +250,11 @@
                 this.z = GAME_CONFIG.wallStartZ;
                 this.type = GAME_CONFIG.poses[Math.floor(Math.random() * GAME_CONFIG.poses.length)];
                 this.color = `hsl(${Math.random() * 360}, 70%, 50%)`;
+
+                // Lane System (Left:-1, Center:0, Right:1)
+                this.lane = Math.floor(Math.random() * 3) - 1;
+
+                this.laneOffsetNorm = this.lane * -0.3;
             }
 
             update(dt) {
@@ -266,6 +271,9 @@
                 // Perspective
                 const scale = Math.pow(progress, 2) * 5 + 0.1;
 
+                // Calculate Draw Offset
+                const offsetX = this.getDrawOffsetX(width, scale);
+
                 ctx.save();
                 ctx.translate(width / 2, height / 2);
                 ctx.scale(scale, scale);
@@ -275,7 +283,18 @@
                 const HUGE = 10000;
                 ctx.rect(-HUGE / 2, -HUGE / 2, HUGE, HUGE);
 
+                // Translate for Hole
+                ctx.translate(offsetX, 0); // Apply Lane Offset
                 this.pathHole(ctx, this.type);
+                // Translate back for future drawing? Or just Restore later. 
+                // Need to undo translation for the "Rect" logic? 
+                // Wait. pathHole draws the *hole*.
+                // We drew the RED RECT first.
+                // context globalCompositeOperation? or "fill evenodd"?
+                // The hole should be "cut out".
+                // If I translate BEFORE `pathHole`, the hole path is offset.
+                // The Red Rect is centered.
+                // So the hole will be cut out from the Red Rect at the offset position. Correct.
 
                 ctx.closePath();
                 ctx.fill("evenodd");
@@ -284,13 +303,38 @@
                 ctx.lineWidth = 4 / scale;
                 ctx.stroke();
 
-                ctx.scale(1, -1);
+                ctx.scale(-1, 1);
                 ctx.fillStyle = "white";
                 ctx.font = "20px Arial";
                 ctx.textAlign = "center";
+                // Text also needs offset? Yes, relative to hole.
+                // We are already translated by `offsetX` (from above).
+                // Wait, `scale(1, -1)` flips Y. X is mostly unaffected (except handled by scale?).
+                // logic: `ctx.translate(offsetX, 0)` is active.
+                // So drawing text at 0,0 draws it at hole center. Correct.
                 ctx.fillText(this.targetPoseName(this.type), 0, -120);
 
                 ctx.restore();
+            }
+
+            getDrawOffsetX(width, scale) {
+                // Determine Offset in "Wall Coordinate Space" (Post-Scale)
+                // We want the HOLE to align with the Lane on screen.
+                // Lane Targets (Screen Pixels): 
+                // Lane -1: Width * 0.8 (Screen Right, Mirror Left) -> Wait.
+                // Let's re-verify Lane Logic.
+                // constructor: laneOffsetNorm = lane * -0.3.
+                // Lane -1 -> +0.3. Lane 1 -> -0.3.
+                // If Width=1000. Center=500.
+                // Lane -1 Target = 500 + 300 = 800 (Screen Right).
+                // Lane 1 Target = 500 - 300 = 200 (Screen Left).
+                // Wall Draw: Translated to Center (500).
+                // Scale = S.
+                // Offset needed (D) such that D * S = Target - Center = 300.
+                // D = 300 / S.
+                // D = (width * this.laneOffsetNorm) / scale.
+
+                return (width * this.laneOffsetNorm) / scale;
             }
 
             targetPoseName(type) {
@@ -300,9 +344,7 @@
                     case 'SQUAT': return "SQUAT DOWN!";
                     case 'X': return "X-POSE!";
                     case 'T': return "T-POSE!";
-                    case 'MUSCLE': return "MUSCLE!";
                     case 'FLAMINGO': return "FLAMINGO!";
-                    case 'TRIANGLE': return "TRIANGLE!";
                     default: return "";
                 }
             }
@@ -333,23 +375,23 @@
                     // T shape
                     ctx.rect(-20, -100, 40, 200); // Vert
                     ctx.rect(-80, -80, 160, 40); // Horiz
-                } else if (type === 'MUSCLE') {
-                    // Muscle arms up
-                    ctx.rect(-30, -100, 60, 200); // Body
-                    ctx.rect(-80, -100, 40, 60); // L Arm Up
-                    ctx.rect(40, -100, 40, 60); // R Arm Up
-                    // Connectors
-                    ctx.rect(-80, -40, 160, 20);
                 } else if (type === 'FLAMINGO') {
-                    // One leg up
+                    // One leg up (Improved Shape)
+                    ctx.rect(-20, 0, 40, 100);
+                    ctx.rect(-30, -100, 60, 100);
+                    ctx.moveTo(-20, 0); ctx.lineTo(-80, 0); ctx.lineTo(-80, 40); ctx.lineTo(-20, 60);
+                } else if (type === 'SUMO') {
+                    // Wide squat
+                    ctx.moveTo(0, -90); ctx.lineTo(-50, -40); ctx.lineTo(-80, 0); // Arms/Shoulders
+                    ctx.lineTo(-100, 60); ctx.lineTo(-40, 60); ctx.lineTo(0, 20); // Leg L
+                    ctx.lineTo(40, 60); ctx.lineTo(100, 60); ctx.lineTo(80, 0); // Leg R
+                    ctx.lineTo(50, -40); ctx.lineTo(0, -90); // R Arm/Shoulder
+                } else if (type === 'KICK') {
+                    // Side Kick
+                    ctx.rect(-20, 0, 40, 100); // Standing leg
                     ctx.rect(-30, -100, 60, 100); // Body
-                    ctx.rect(-10, 0, 20, 100); // Leg Center? No, just one leg
-                    // Make it look like standing on one leg
-                    ctx.rect(-15, 0, 30, 100);
-                } else if (type === 'TRIANGLE') {
-                    // Diamond/Triangle on hips
-                    ctx.moveTo(0, -120); ctx.lineTo(-60, -40); ctx.lineTo(0, 40); ctx.lineTo(60, -40);
-                    ctx.rect(-20, -40, 40, 140); // Legs/Body
+                    // Kicking leg
+                    ctx.moveTo(-20, 0); ctx.lineTo(-100, -20); ctx.lineTo(-100, 20); ctx.lineTo(-20, 40);
                 }
             }
         }
@@ -362,6 +404,23 @@
             const rShoulder = landmarks[12];
             const lHip = landmarks[23];
             const rHip = landmarks[24];
+
+            // --- 1. LANE CHECK ---
+            // Calculate Hip Center X
+            const hipCenterX = (lHip.x + rHip.x) / 2;
+            // Target X Logic:
+            // Lane -1 (Left on Screen/Right in Mirror): X ~ 0.8
+            // Lane 0: X ~ 0.5
+            // Lane 1: X ~ 0.2
+            // Formula: 0.5 - (lane * 0.3)
+            const targetX = 0.5 - (wall.lane * 0.3);
+
+            if (Math.abs(hipCenterX - targetX) > 0.15) { // 15% tolerance
+                // FAIL POSITION
+                return false;
+            }
+
+            // --- 2. POSE CHECK ---
 
             if (wall.type === 'Y') {
                 const handsUp = lWrist.y < nose.y && rWrist.y < nose.y;
@@ -400,34 +459,79 @@
                 const shoulderWidth = Math.abs(lShoulder.x - rShoulder.x);
                 const wristWidth = Math.abs(lWrist.x - rWrist.x);
                 return yDiff && (wristWidth > shoulderWidth * 2.0);
-            } else if (wall.type === 'MUSCLE') {
-                // Elbows ~ Shoulders Y
-                const lElbow = landmarks[13];
-                const rElbow = landmarks[14];
-                const elbowLevel = Math.abs(lElbow.y - lShoulder.y) < 0.2;
-                // Wrists < Elbows (Higher)
-                const armsUp = lWrist.y < lElbow.y && rWrist.y < rElbow.y;
-                return elbowLevel && armsUp;
             } else if (wall.type === 'FLAMINGO') {
-                // One ankle significantly higher than other
                 const lAnkle = landmarks[27];
                 const rAnkle = landmarks[28];
                 const diff = Math.abs(lAnkle.y - rAnkle.y);
-                // 0.1 is significant? Standing is near 0.
                 return diff > 0.1;
-            } else if (wall.type === 'TRIANGLE') {
-                // Wrists near Hips
-                const lHandHip = Math.dist(lWrist.x, lWrist.y, lHip.x, lHip.y) < 0.2;
-                const rHandHip = Math.dist(rWrist.x, rWrist.y, rHip.x, rHip.y) < 0.2;
-                // Elbows out? (Check elbow X is outside shoulder/hip line)
-                // Or just hands on hips is enough.
-                return lHandHip && rHandHip;
+            } else if (wall.type === 'SUMO') {
+                const lAnkle = landmarks[27];
+                const rAnkle = landmarks[28];
+                const lKnee = landmarks[25];
+                const rKnee = landmarks[26];
+
+                // Wide Stance (Ankle X spread)
+                const shoulderWidth = Math.abs(lShoulder.x - rShoulder.x);
+                const ankleWidth = Math.abs(lAnkle.x - rAnkle.x);
+                // Low Hips (Y check) - Hips lower than or close to knees? 
+                // Or just normalized height. 
+                // Let's check Knee Y vs Hip Y. In deep squat, Hip Y is close to Knee Y.
+                // Normal standing: Hip Y << Knee Y (Upside down? No Y=0 top. Hip < Knee)
+                // Squat: Hip Y increases (goes down).
+                const squatDepth = Math.min(Math.abs(lHip.y - lKnee.y), Math.abs(rHip.y - rKnee.y));
+
+                return (ankleWidth > shoulderWidth * 2.0) && (squatDepth < 0.2); // Hips close to knees vertical
+            } else if (wall.type === 'KICK') {
+                const lAnkle = landmarks[27];
+                const rAnkle = landmarks[28];
+                const lHip = landmarks[23];
+                // One Foot High (Y < Hip?)
+                // Or just one foot significantly higher than other
+                const footHigh = (lAnkle.y < lHip.y + 0.1) || (rAnkle.y < rHip.y + 0.1); // Near hip level
+                return footHigh;
             }
             return false;
         }
 
         // Helper for independent math (Math.dist not builtin)
         Math.dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+
+        function drawLaneMarker(ctx, w, h, lane) {
+            // Draw "Stand Here" arrow
+            // Lane -1: Left (Normalized 0.8 in Mirror space... wait. 
+            // In Draw Space (Flipped): Lane -1 is +0.3 offset.
+            // Lane 1 is -0.3 offset.
+            const offsetNorm = lane * -0.3;
+            const x = w / 2 + (w * offsetNorm);
+            const y = h - 50;
+
+            ctx.save();
+            ctx.fillStyle = "yellow";
+            ctx.strokeStyle = "black";
+            ctx.lineWidth = 3;
+
+            // Arrow
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x - 30, y + 30);
+            ctx.lineTo(x + 30, y + 30);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Text
+            // Context is Mirrored (from GameLoop). X points Left.
+            // We want text readable. Flip X.
+            ctx.scale(-1, 1);
+            ctx.textAlign = "center";
+            // Since we flipped X, position 'x' (which is positive) becomes negative in new system?
+            // No, scale applies to future coords.
+            // If we draw at x, it draws at -x (Right).
+            // Current X (lane pos) is in Mirrored space.
+            // If we Flip X, we need to pass -x to draw at correct visual spot.
+            ctx.fillText("STAND HERE", -x, -(y + 40));
+            ctx.restore();
+        }
 
         // --- GAME PLAY FUNCTIONS ---
 
@@ -460,8 +564,7 @@
 
                 // B. Flash
                 ctx.save();
-                ctx.scale(-1, 1); // Un-mirror for overlay
-                ctx.translate(-width, 0);
+                // Removed un-mirror logic as CSS mirror is gone and this runs in clean context
 
                 // Flash Color
                 let alpha = (effectState.timer / EFFECT_DURATION) * 0.6;
@@ -499,8 +602,7 @@
             // Draw Countdown/Status if waiting
             if (subState === 'WAIT') {
                 ctx.save();
-                ctx.scale(-1, 1);
-                ctx.translate(-width, 0);
+                // Removed un-mirror logic
 
                 ctx.textAlign = "center";
                 ctx.textBaseline = "middle";
@@ -584,7 +686,12 @@
                 else if (subState === 'ACTION') {
                     if (currentWall) {
                         currentWall.update(dt);
+
+                        // Draw Wall
                         currentWall.draw(canvasCtx, w, h);
+
+                        // Draw Floor Marker (Lane Guide)
+                        drawLaneMarker(canvasCtx, w, h, currentWall.lane);
 
                         // Check Collision/Pass
                         if (currentWall.z <= 0) {
