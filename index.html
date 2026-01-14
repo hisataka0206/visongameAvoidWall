@@ -122,6 +122,46 @@
             transform: none;
             box-shadow: none;
         }
+
+        /* Disclaimer Styling */
+        .disclaimer-box {
+            margin-top: 30px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.6);
+            border-radius: 10px;
+            text-align: left;
+            border: 1px solid #555;
+            max-width: 700px;
+            font-size: 0.9rem;
+        }
+
+        .disclaimer-item {
+            margin-bottom: 10px;
+            line-height: 1.4;
+        }
+
+        .disclaimer-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .disclaimer-icon {
+            font-size: 1.2rem;
+            margin-right: 5px;
+            vertical-align: middle;
+        }
+
+        .text-safe {
+            color: #4db8ff;
+        }
+
+        .text-warn {
+            color: #ff5555;
+        }
+
+        .text-highlight {
+            font-weight: bold;
+            color: #fff;
+        }
     </style>
 </head>
 
@@ -143,6 +183,22 @@
             <h1 id="title-text">BRAIN WALL</h1>
             <p id="status-text">Loading Assets...</p>
             <button id="start-btn" disabled>LOADING...</button>
+
+            <div class="disclaimer-box">
+                <div class="disclaimer-item text-safe">
+                    <span class="disclaimer-icon">🔒</span>
+                    <span class="text-highlight">安心設計:</span>
+                    カメラ映像と骨格推定の処理はすべてユーザーのPC内（ローカル）で完結します。
+                    映像がサーバーに送信・保存されることは一切ありません。
+                </div>
+                <div class="disclaimer-item text-warn">
+                    <span class="disclaimer-icon">⚠️</span>
+                    <span class="text-highlight">安全上の注意:</span>
+                    体を大きく動かすゲームです。
+                    <strong>周囲の安全を十分に確認してください。</strong>
+                    プレイ中の怪我や物損について、開発者は責任を負いません。
+                </div>
+            </div>
         </div>
     </div>
 
@@ -269,6 +325,14 @@
                 img.src = IMAGE_SOURCES[key];
                 img.onload = () => {
                     loadedCount++;
+
+                    // Show Progress
+                    const percentage = Math.floor((loadedCount / total) * 100);
+                    if (!assetsLoaded) {
+                        statusText.innerText = `Loading Assets... ${percentage}%`;
+                        startBtn.innerText = `LOADING... ${percentage}%`;
+                    }
+
                     if (loadedCount === total) {
                         assetsLoaded = true;
                         console.log("Assets Loaded");
