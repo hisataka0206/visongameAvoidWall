@@ -309,48 +309,105 @@
             draw(ctx, width, height) {
                 const maxZ = GAME_CONFIG.wallStartZ;
                 let progress = 1 - (this.z / maxZ);
-                if (progress < 0) return;
+                // Clamp progress
+                if (progress < 0) progress = 0;
+                if (progress > 1) progress = 1;
 
-                // Perspective
-                const scale = Math.pow(progress, 2) * 5 + 0.1;
+                // Specific Scaling Requirement:
+                // Min: 0 (at progress 0)
+                // Max: Screen Size (at progress 1)
+                // Maintain Aspect Ratio.
 
-                // Calculate Draw Offset
-                const offsetX = this.getDrawOffsetX(width, scale);
+                // Get Image to draw
+                const img = IMAGES[this.type];
+                if (!img) return;
+
+                // Determine Base Size (at progress 1)
+                // Fit to screen (Contain) or Cover? 
+                // "Max is screen size" -> Let's ensure it fits within the screen (Math.min) 
+                // or covers (Math.max) to be a proper wall?
+                // Usually walls cover. But let's start with 'Contain' to ensure full visibility,
+                // or match the larger dimension to ensure it blocks the view.
+                // Let's use "Cover" logic (Math.max) so there are no empty gaps if aspect ratios differ slightly.
+                // Actually, if I use Math.max, I might crop the top/bottom if screen is tall.
+                // Let's use Math.min for "Screen Size" (it won't exceed screen).
+
+                const imgW = img.naturalWidth || img.width;
+                const imgH = img.naturalHeight || img.height;
+                // Avoid division by zero
+                if (imgW === 0 || imgH === 0) return;
+
+                const scaleW = width / imgW;
+                const scaleH = height / imgH;
+
+                // "Max is screen size" implies fitting the screen.
+                const baseScale = Math.min(scaleW, scaleH);
+
+                // Apply Progress
+                const finalScale = baseScale * progress;
+
+                // Calculate Dimensions
+                const drawW = imgW * finalScale;
+                const drawH = imgH * finalScale;
+
+                // Calculate Draw Offset (Lane)
+                // Lane offset should also scale? 
+                // Perspective: Things far away move less in screen pixels.
+                // Lane position is X coordinate.
+                // At z=max (progress 0), offset should be near 0 (vanishing point).
+                // At z=0 (progress 1), offset should be full lane width.
+                // My Lane logic: `wall.lane` (-1, 0, 1).
+                // Screen X = Center + (LaneOffset * Scale?).
+                // Usually X = x_world / z. 
+                // Here `progress` is roughly `1/z` factor relative to screen.
+                // So `offsetX = maxLaneOffset * progress`.
+                // Lane spacing: lets say 30% of screen width.
+                const laneScreenOffset = (width * 0.3) * this.lane;
+                // User Requirement: Keep horizontal position constant (match max size position).
+                // Do not scale offset by progress.
+                const currentOffsetX = laneScreenOffset;
 
                 ctx.save();
                 ctx.translate(width / 2, height / 2);
-                ctx.scale(scale, scale);
+                ctx.translate(currentOffsetX, 0); // Apply constant lane offset
 
-                // Draw Wall Image
-                // We assume the images (wall*50.png) are pre-cut with transparency.
-                // Draw centered.
-                const imgSize = 1024; // Normalized size
+                // Draw Image Centered
+                // Global Alpha? User said "Use transparent of wall.png". 
+                // Images are likely PNGs with transparency.
+                // ctx.globalAlpha = 1.0; 
 
-                // Opacity if needed, though images are likely semi-transparent already per README
-                // ctx.globalAlpha = 0.8; 
-
-                // Draw specific pose wall
-                if (IMAGES[this.type]) {
-                    // Translate to lane position
-                    ctx.translate(offsetX, 0);
-                    ctx.drawImage(IMAGES[this.type], -imgSize / 2, -imgSize / 2, imgSize, imgSize);
-                }
+                ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
 
                 ctx.restore();
 
-                // Text Label
+                // Text Rendering (Scaled and Positioned same as wall)
                 ctx.save();
                 ctx.translate(width / 2, height / 2);
-                ctx.scale(scale, scale);
-                ctx.translate(offsetX, 0);
+                ctx.translate(currentOffsetX, 0);
 
-                ctx.scale(-1, 1);
+                // Scale text with wall? Or just position it?
+                // If wall is tiny, text overlap?
+                // Let's scale text position, but keep text size readable? 
+                // Or scale text too.
+                // "Scaling: Min is zero..." implies everything scales.
+                ctx.scale(progress, progress); // Text scales with wall
+
                 ctx.fillStyle = "white";
                 ctx.font = "bold 40px Arial";
                 ctx.textAlign = "center";
                 ctx.shadowColor = "black";
                 ctx.shadowBlur = 4;
-                ctx.fillText(this.targetPoseName(this.type), 0, -250);
+                // Position text above the image (Relative to raw image size)
+                // We are scaled by `progress` here.
+                // But we need to be relative to the *drawn* image size in this context.
+                // If we use ctx.scale(progress), then we draw at "Full Size Coords".
+                // Full Size Height is `drawH / progress` = `imgH * baseScale`.
+                // So top is `- (imgH * baseScale) / 2`.
+
+                const fullSizeH = imgH * baseScale;
+                const textY = -fullSizeH / 2 - 50; // 50px padding above
+
+                ctx.fillText(this.targetPoseName(this.type), 0, textY);
                 ctx.restore();
             }
 
