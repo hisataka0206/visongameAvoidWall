@@ -198,14 +198,14 @@
         const IMAGES = {};
         const IMAGE_SOURCES = {
             'BASE': './wall/wall50.png',
-            'Y': './wall/wallY50.png',
-            'I': './wall/wallI50.png',
-            'SQUAT': './wall/wallSquat50.png',
-            'X': './wall/wallX50.png',
-            'T': './wall/wallT50.png',
-            'FLAMINGO': './wall/wallFlamingo50.png',
-            'SUMO': './wall/wallSumo50.png',
-            'KICK': './wall/wallKick50.png'
+            'Y': './wall/wallY50tr.png',
+            'I': './wall/wallI50tr.png',
+            'SQUAT': './wall/wallSquat50tr.png',
+            'X': './wall/wallX50tr.png',
+            'T': './wall/wallT50tr.png',
+            'FLAMINGO': './wall/wallFlamingo50tr.png',
+            'SUMO': './wall/wallSumo50tr.png',
+            'KICK': './wall/wallKick50tr.png'
         };
         let assetsLoaded = false;
 
@@ -396,7 +396,7 @@
                 // Let's scale text position, but keep text size readable? 
                 // Or scale text too.
                 // "Scaling: Min is zero..." implies everything scales.
-                ctx.scale(progress, progress); // Text scales with wall
+                ctx.scale(-progress, progress); // Text scales with wall (and un-mirrors)
 
                 ctx.fillStyle = "white";
                 ctx.font = "bold 40px Arial";
@@ -445,6 +445,8 @@
                     case 'X': return "X-POSE!";
                     case 'T': return "T-POSE!";
                     case 'FLAMINGO': return "FLAMINGO!";
+                    case 'SUMO': return "SUMO!";
+                    case 'KICK': return "KICK!";
                     default: return "";
                 }
             }
