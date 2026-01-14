@@ -116,6 +116,17 @@ Canvas上に描画する要素：
   * デフォルト半透明の赤色などで塗りつぶし
   * 「ここにはみ出したらアウト」を明示
 * /wallディレクトリに置かれている各ポーズの穴についてのpng画像を読み込み、迫ってくる壁として使うこと
+* デフォルトはwall50.png
+* IポーズはwallI50.png
+* フラミンゴポーズはwallFlamingo50.png
+* squatポーズはwallSquat50.png
+* sumoポーズはwallSumo50.png
+* kickポーズはwallKick50.png
+* TポーズはwallT50.png
+* XポーズはwallX50.png
+* YポーズはwallY50.png
+
+
 * /wallディレクトリに置かれているwall.pngの半透明を使って全体を塗り潰すこと
 
 ### 5.2 壁スピード

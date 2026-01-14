@@ -141,8 +141,8 @@
         <!-- Start / Game Over Screen -->
         <div id="message-overlay">
             <h1 id="title-text">BRAIN WALL</h1>
-            <p id="status-text">Allow camera access to play!</p>
-            <button id="start-btn" disabled>LOADING AI...</button>
+            <p id="status-text">Loading Assets...</p>
+            <button id="start-btn" disabled>LOADING...</button>
         </div>
     </div>
 
@@ -193,6 +193,21 @@
             shakeIntensity: 0  // Pixel offset
         };
 
+        // --- IMGAES ---
+        const IMAGES = {};
+        const IMAGE_SOURCES = {
+            'BASE': './wall/wall50.png',
+            'Y': './wall/wallY50.png',
+            'I': './wall/wallI50.png',
+            'SQUAT': './wall/wallSquat50.png',
+            'X': './wall/wallX50.png',
+            'T': './wall/wallT50.png',
+            'FLAMINGO': './wall/wallFlamingo50.png',
+            'SUMO': './wall/wallSumo50.png',
+            'KICK': './wall/wallKick50.png'
+        };
+        let assetsLoaded = false;
+
         // --- SOUND ---
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
@@ -226,7 +241,7 @@
         // --- MEDIA PIPE ---
         function onResults(results) {
             latestResults = results;
-            if (gameState === 'LOADING') {
+            if (gameState === 'LOADING' && assetsLoaded) {
                 gameState = 'MENU';
                 statusText.innerText = "Are you ready?";
                 startBtn.innerText = "START GAME";
@@ -242,7 +257,35 @@
             onFrame: async () => { await pose.send({ image: videoElement }); },
             width: 1280, height: 720
         });
-        camera.start();
+
+        // Load assets then start camera
+        function loadAssets() {
+            let loadedCount = 0;
+            const total = Object.keys(IMAGE_SOURCES).length;
+
+            for (let key in IMAGE_SOURCES) {
+                const img = new Image();
+                img.src = IMAGE_SOURCES[key];
+                img.onload = () => {
+                    loadedCount++;
+                    if (loadedCount === total) {
+                        assetsLoaded = true;
+                        console.log("Assets Loaded");
+                        checkReady();
+                    }
+                };
+                IMAGES[key] = img;
+            }
+        }
+
+        function checkReady() {
+            if (assetsLoaded) {
+                statusText.innerText = "Allow camera access to play!";
+                camera.start();
+            }
+        }
+
+        loadAssets();
 
         // --- GAME CLASSES ---
         class Wall {
@@ -278,42 +321,36 @@
                 ctx.translate(width / 2, height / 2);
                 ctx.scale(scale, scale);
 
-                ctx.fillStyle = "rgba(255, 50, 50, 0.8)";
-                ctx.beginPath();
-                const HUGE = 10000;
-                ctx.rect(-HUGE / 2, -HUGE / 2, HUGE, HUGE);
+                // Draw Wall Image
+                // We assume the images (wall*50.png) are pre-cut with transparency.
+                // Draw centered.
+                const imgSize = 1024; // Normalized size
 
-                // Translate for Hole
-                ctx.translate(offsetX, 0); // Apply Lane Offset
-                this.pathHole(ctx, this.type);
-                // Translate back for future drawing? Or just Restore later. 
-                // Need to undo translation for the "Rect" logic? 
-                // Wait. pathHole draws the *hole*.
-                // We drew the RED RECT first.
-                // context globalCompositeOperation? or "fill evenodd"?
-                // The hole should be "cut out".
-                // If I translate BEFORE `pathHole`, the hole path is offset.
-                // The Red Rect is centered.
-                // So the hole will be cut out from the Red Rect at the offset position. Correct.
+                // Opacity if needed, though images are likely semi-transparent already per README
+                // ctx.globalAlpha = 0.8; 
 
-                ctx.closePath();
-                ctx.fill("evenodd");
+                // Draw specific pose wall
+                if (IMAGES[this.type]) {
+                    // Translate to lane position
+                    ctx.translate(offsetX, 0);
+                    ctx.drawImage(IMAGES[this.type], -imgSize / 2, -imgSize / 2, imgSize, imgSize);
+                }
 
-                ctx.strokeStyle = "#fff";
-                ctx.lineWidth = 4 / scale;
-                ctx.stroke();
+                ctx.restore();
+
+                // Text Label
+                ctx.save();
+                ctx.translate(width / 2, height / 2);
+                ctx.scale(scale, scale);
+                ctx.translate(offsetX, 0);
 
                 ctx.scale(-1, 1);
                 ctx.fillStyle = "white";
-                ctx.font = "20px Arial";
+                ctx.font = "bold 40px Arial";
                 ctx.textAlign = "center";
-                // Text also needs offset? Yes, relative to hole.
-                // We are already translated by `offsetX` (from above).
-                // Wait, `scale(1, -1)` flips Y. X is mostly unaffected (except handled by scale?).
-                // logic: `ctx.translate(offsetX, 0)` is active.
-                // So drawing text at 0,0 draws it at hole center. Correct.
-                ctx.fillText(this.targetPoseName(this.type), 0, -120);
-
+                ctx.shadowColor = "black";
+                ctx.shadowBlur = 4;
+                ctx.fillText(this.targetPoseName(this.type), 0, -250);
                 ctx.restore();
             }
 
@@ -349,51 +386,7 @@
                 }
             }
 
-            pathHole(ctx, type) {
-                if (type === 'Y') {
-                    ctx.rect(-20, -20, 40, 100);
-                    ctx.moveTo(-20, -20);
-                    ctx.lineTo(-80, -100);
-                    ctx.lineTo(-50, -100);
-                    ctx.lineTo(0, -40);
-                    ctx.lineTo(50, -100);
-                    ctx.lineTo(80, -100);
-                    ctx.lineTo(20, -20);
-                }
-                else if (type === 'I') {
-                    ctx.rect(-25, -120, 50, 240);
-                }
-                else if (type === 'SQUAT') {
-                    ctx.rect(-60, 20, 120, 100);
-                } else if (type === 'X') {
-                    // X shape
-                    ctx.moveTo(-80, -100); ctx.lineTo(-20, 0); ctx.lineTo(-80, 100);
-                    ctx.lineTo(-40, 100); ctx.lineTo(0, 20); ctx.lineTo(40, 100);
-                    ctx.lineTo(80, 100); ctx.lineTo(20, 0); ctx.lineTo(80, -100);
-                    ctx.lineTo(40, -100); ctx.lineTo(0, -20); ctx.lineTo(-40, -100);
-                } else if (type === 'T') {
-                    // T shape
-                    ctx.rect(-20, -100, 40, 200); // Vert
-                    ctx.rect(-80, -80, 160, 40); // Horiz
-                } else if (type === 'FLAMINGO') {
-                    // One leg up (Improved Shape)
-                    ctx.rect(-20, 0, 40, 100);
-                    ctx.rect(-30, -100, 60, 100);
-                    ctx.moveTo(-20, 0); ctx.lineTo(-80, 0); ctx.lineTo(-80, 40); ctx.lineTo(-20, 60);
-                } else if (type === 'SUMO') {
-                    // Wide squat
-                    ctx.moveTo(0, -90); ctx.lineTo(-50, -40); ctx.lineTo(-80, 0); // Arms/Shoulders
-                    ctx.lineTo(-100, 60); ctx.lineTo(-40, 60); ctx.lineTo(0, 20); // Leg L
-                    ctx.lineTo(40, 60); ctx.lineTo(100, 60); ctx.lineTo(80, 0); // Leg R
-                    ctx.lineTo(50, -40); ctx.lineTo(0, -90); // R Arm/Shoulder
-                } else if (type === 'KICK') {
-                    // Side Kick
-                    ctx.rect(-20, 0, 40, 100); // Standing leg
-                    ctx.rect(-30, -100, 60, 100); // Body
-                    // Kicking leg
-                    ctx.moveTo(-20, 0); ctx.lineTo(-100, -20); ctx.lineTo(-100, 20); ctx.lineTo(-20, 40);
-                }
-            }
+            // pathHole removed (replaced by images)
         }
 
         function checkCollision(wall, landmarks) {
