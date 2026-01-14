@@ -298,38 +298,85 @@
         // --- POC LOGGING ---
         const GAS_URL = "https://script.google.com/macros/s/AKfycbxeJqv6X1k6V3o9HkMGSe7I-Td0F0ry8MgN3_NtLkEn1aYfapXYND5nUYl8PCamvu8ANA/exec";
         const GAME_NAME = "AvoidWall_v1";
-        const SESSION_ID = "sess_" + Math.random().toString(36).substr(2, 9);
+        const SESSION_ID = "sesswall_" + Math.random().toString(36).substr(2, 9);
 
-        // Send Key Log (Fire and Forget)
-        function sendKeyLog(keyName, note = "") {
-            // Log to console for verifying locally
-            console.log(`[PoC Log] Key: ${keyName}, Note: ${note}`);
+        // Send Log (Generic)
+        // Send Log (Generic)
+        function sendLog(data) {
+            console.log(`[PoC Log]`, data);
 
-            // Send to GAS (no-cors mode for simple fire-and-forget, though response is opaque)
-            // Using POST with text/plain to avoid preflight options failure on some GAS deployments if not handled.
+            // Mapper: keys to 'key' and 'note'
+            let logKey = "";
+            let logNote = "";
+
+            if (data.type === 'key') {
+                logKey = data.key;
+                logNote = data.note || "";
+            } else if (data.type === 'erroneous_input') {
+                logKey = data.key;
+                logNote = `ERRONEOUS (Exp: ${data.expected.join(',')})`;
+            } else if (data.type === 'game_over') {
+                logKey = "GAME_OVER";
+                logNote = `Score: ${data.score}, Level: ${data.level && data.level.toFixed ? data.level.toFixed(1) : data.level}`;
+            } else if (data.type === 'event') {
+                logKey = data.event.toUpperCase(); // CLEAR / MISS
+                logNote = `Pose: ${data.pose}, Lane: ${data.lane}, Score: ${data.score || ""}, Lives: ${data.lives || ""}`;
+            } else {
+                // Fallback
+                logKey = data.type || "UNKNOWN";
+                logNote = JSON.stringify(data);
+            }
+
+            const payload = {
+                gameName: GAME_NAME,
+                session: SESSION_ID,
+                timestamp: new Date().toISOString(),
+                key: logKey,
+                note: logNote
+            };
+
             fetch(GAS_URL, {
                 method: 'POST',
                 mode: 'no-cors',
-                headers: {
-                    'Content-Type': 'text/plain'
-                },
-                body: JSON.stringify({
-                    gameName: GAME_NAME,
-                    key: keyName,
-                    note: note,
-                    session: SESSION_ID,
-                    timestamp: new Date().toISOString()
-                })
+                headers: { 'Content-Type': 'text/plain' },
+                body: JSON.stringify(payload)
             }).catch(e => console.error("Log Error:", e));
+        }
+
+        // Backward compatibility / Helper for keys
+        function sendKeyLog(keyName, note = "") {
+            sendLog({ type: 'key', key: keyName, note: note });
         }
 
         // Global Key Listener
         window.addEventListener('keydown', (e) => {
-            // PoC Logging
-            sendKeyLog(e.key);
+            const key = e.key;
+
+            // Logic for Erroneous Input Logging
+            // Define Expected Keys per State
+            let expected = [];
+            if (gameState === 'MENU' || gameState === 'GAMEOVER') {
+                expected = ['s', 'S'];
+            }
+
+            // If we have specific expectations and key is NOT in them
+            if (expected.length > 0 && !expected.includes(key)) {
+                sendLog({
+                    type: 'erroneous_input',
+                    key: key,
+                    state: gameState,
+                    expected: expected,
+                    description: "User pressed unexpected key for current screen."
+                });
+                return; // Do not process invalid keys further (or log as generic key?) 
+                // If we return, we stop 'sendKeyLog' spam.
+            }
+
+            // If valid or no strict expectations (like Playing), log as normal key
+            sendKeyLog(key);
 
             // Game Control: hit 'S' to start/retry
-            if ((e.key === 's' || e.key === 'S')) {
+            if ((key === 's' || key === 'S')) {
                 if (gameState === 'MENU' || gameState === 'GAMEOVER') {
                     startGame();
                 }
@@ -707,6 +754,18 @@
                 effectState.shakeIntensity = 0;
                 playSound('success');
 
+                // Log Clear
+                if (currentWall) {
+                    sendLog({
+                        type: 'event',
+                        event: 'clear',
+                        pose: currentWall.type,
+                        lane: currentWall.lane,
+                        score: score,
+                        level: currentSpeed
+                    });
+                }
+
                 // Difficulty Increase (Unlimited)
                 currentSpeed += GAME_CONFIG.speedIncrement;
 
@@ -714,7 +773,17 @@
                 effectState.type = 'miss';
                 effectState.timer = EFFECT_DURATION;
                 effectState.shakeIntensity = 20;
-                playSound('crash');
+                // Log Miss
+                if (currentWall) {
+                    sendLog({
+                        type: 'event',
+                        event: 'miss',
+                        pose: currentWall.type,
+                        lane: currentWall.lane,
+                        lives: lives,
+                        level: currentSpeed
+                    });
+                }
             }
         }
 
@@ -910,6 +979,12 @@
             statusText.innerText = "Final Score: " + score;
             startInstruction.innerText = 'Press "S" to TRY AGAIN';
             startInstruction.style.display = 'block';
+
+            sendLog({
+                type: 'game_over',
+                score: score,
+                level: currentSpeed
+            });
         }
 
         function startGame() {
