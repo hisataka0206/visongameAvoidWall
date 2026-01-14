@@ -72,7 +72,7 @@ Canvas上に描画する要素：
 
 ### 4.1 ゲームの基本フロー
 
-1. スタートボタンで開始
+1. スタートボタンで開始（キーボードのSを押下）
 2. 指定ポーズをランダム選択
 3. 壁が奥から手前へ迫ってくる
 4. 通過タイミングで判定
@@ -383,3 +383,26 @@ const GAME_CONFIG = {
 
 ---
 
+## 15.PoC調査
+
+* PoCの調査を行うためにユーザーのログをGAS上に記載するようにしたい。
+GASのアドレスはこちら。
+https://script.google.com/macros/s/AKfycbxeJqv6X1k6V3o9HkMGSe7I-Td0F0ry8MgN3_NtLkEn1aYfapXYND5nUYl8PCamvu8ANA/exec
+
+* GASにどのキーを打ったのかを記載されるように以下のコードを参考にindex.htmlを修正してください。
+// ▼ ゲームごとにここを変える
+const GAME_NAME = "AvoidWall_v1"; 
+
+// ... (SESSION_IDなどはそのまま) ...
+
+function sendKeyLog(keyName, note = "") {
+    fetch(GAS_URL, {
+        // ... (省略) ...
+        body: JSON.stringify({
+            gameName: GAME_NAME, // ▼ ここでゲーム名を送信！
+            key: keyName,
+            note: note,
+            session: SESSION_ID 
+        })
+    });
+}

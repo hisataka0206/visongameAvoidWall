@@ -98,29 +98,22 @@
             margin-bottom: 30px;
         }
 
-        button {
-            background: linear-gradient(45deg, #ff0055, #ffcc00);
-            border: none;
-            padding: 15px 40px;
-            font-size: 2rem;
-            color: white;
+        .instruction-text {
+            font-size: 2.5rem;
+            color: #ffcc00;
+            margin: 20px 0;
             font-weight: bold;
-            border-radius: 50px;
-            cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
-            box-shadow: 0 5px 15px rgba(255, 0, 85, 0.4);
+            animation: flash 1s infinite alternate;
         }
 
-        button:hover {
-            transform: scale(1.1);
-            box-shadow: 0 8px 20px rgba(255, 0, 85, 0.6);
-        }
+        @keyframes flash {
+            from {
+                opacity: 1;
+            }
 
-        button:disabled {
-            background: #666;
-            cursor: not-allowed;
-            transform: none;
-            box-shadow: none;
+            to {
+                opacity: 0.5;
+            }
         }
 
         /* Disclaimer Styling */
@@ -182,7 +175,7 @@
         <div id="message-overlay">
             <h1 id="title-text">BRAIN WALL</h1>
             <p id="status-text">Loading Assets...</p>
-            <button id="start-btn" disabled>LOADING...</button>
+            <div id="start-instruction" class="instruction-text" style="display:none;">LOADING...</div>
 
             <div class="disclaimer-box">
                 <div class="disclaimer-item text-safe">
@@ -197,6 +190,13 @@
                     体を大きく動かすゲームです。
                     <strong>周囲の安全を十分に確認してください。</strong>
                     プレイ中の怪我や物損について、開発者は責任を負いません。
+                </div>
+                <div class="disclaimer-item text-safe"
+                    style="margin-top: 10px; border-top: 1px solid #777; padding-top: 5px;">
+                    <span class="disclaimer-icon">ℹ️</span>
+                    <span class="text-highlight">品質改善:</span>
+                    ゲームの品質向上のため、プレイ中のキー操作ログ等を匿名で収集しています。
+                    個人を特定する情報は含みません。
                 </div>
             </div>
         </div>
@@ -222,7 +222,7 @@
         const videoElement = document.getElementById('input_video');
         const canvasElement = document.getElementById('output_canvas');
         const canvasCtx = canvasElement.getContext('2d');
-        const startBtn = document.getElementById('start-btn');
+        const startInstruction = document.getElementById('start-instruction');
         const statusText = document.getElementById('status-text');
         const titleText = document.getElementById('title-text');
         const messageOverlay = document.getElementById('message-overlay');
@@ -295,14 +295,55 @@
             }
         }
 
+        // --- POC LOGGING ---
+        const GAS_URL = "https://script.google.com/macros/s/AKfycbxeJqv6X1k6V3o9HkMGSe7I-Td0F0ry8MgN3_NtLkEn1aYfapXYND5nUYl8PCamvu8ANA/exec";
+        const GAME_NAME = "AvoidWall_v1";
+        const SESSION_ID = "sess_" + Math.random().toString(36).substr(2, 9);
+
+        // Send Key Log (Fire and Forget)
+        function sendKeyLog(keyName, note = "") {
+            // Log to console for verifying locally
+            console.log(`[PoC Log] Key: ${keyName}, Note: ${note}`);
+
+            // Send to GAS (no-cors mode for simple fire-and-forget, though response is opaque)
+            // Using POST with text/plain to avoid preflight options failure on some GAS deployments if not handled.
+            fetch(GAS_URL, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: {
+                    'Content-Type': 'text/plain'
+                },
+                body: JSON.stringify({
+                    gameName: GAME_NAME,
+                    key: keyName,
+                    note: note,
+                    session: SESSION_ID,
+                    timestamp: new Date().toISOString()
+                })
+            }).catch(e => console.error("Log Error:", e));
+        }
+
+        // Global Key Listener
+        window.addEventListener('keydown', (e) => {
+            // PoC Logging
+            sendKeyLog(e.key);
+
+            // Game Control: hit 'S' to start/retry
+            if ((e.key === 's' || e.key === 'S')) {
+                if (gameState === 'MENU' || gameState === 'GAMEOVER') {
+                    startGame();
+                }
+            }
+        });
+
         // --- MEDIA PIPE ---
         function onResults(results) {
             latestResults = results;
             if (gameState === 'LOADING' && assetsLoaded) {
                 gameState = 'MENU';
                 statusText.innerText = "Are you ready?";
-                startBtn.innerText = "START GAME";
-                startBtn.disabled = false;
+                startInstruction.innerText = 'Press "S" to GAME START';
+                startInstruction.style.display = 'block';
             }
         }
 
@@ -330,7 +371,8 @@
                     const percentage = Math.floor((loadedCount / total) * 100);
                     if (!assetsLoaded) {
                         statusText.innerText = `Loading Assets... ${percentage}%`;
-                        startBtn.innerText = `LOADING... ${percentage}%`;
+                        startInstruction.innerText = `LOADING... ${percentage}%`;
+                        startInstruction.style.display = 'block';
                     }
 
                     if (loadedCount === total) {
@@ -346,6 +388,7 @@
         function checkReady() {
             if (assetsLoaded) {
                 statusText.innerText = "Allow camera access to play!";
+                startInstruction.innerText = "Waiting for Camera...";
                 camera.start();
             }
         }
@@ -865,7 +908,8 @@
             messageOverlay.style.display = 'block';
             titleText.innerText = "GAME OVER";
             statusText.innerText = "Final Score: " + score;
-            startBtn.innerText = "TRY AGAIN";
+            startInstruction.innerText = 'Press "S" to TRY AGAIN';
+            startInstruction.style.display = 'block';
         }
 
         function startGame() {
@@ -883,10 +927,6 @@
 
             playSound('bgm-start');
         }
-
-        startBtn.addEventListener('click', () => {
-            startGame();
-        });
 
         requestAnimationFrame(gameLoop);
 
