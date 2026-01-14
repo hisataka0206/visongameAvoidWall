@@ -156,7 +156,8 @@
             speedIncrement: 1.0,     // Speed up per clear
             spawnInterval: 2000,     // Time between walls (Waiting period) in ms
             judgementFrameCount: 5,  // Not strictly used with current Z-logic, but conceptually good
-            wallStartZ: 100          // Start distance
+            wallStartZ: 100,         // Start distance
+            wallOpacity: 0.8         // Wall Image Opacity (0.0 to 1.0)
         };
 
         const EFFECT_DURATION = 60; // Frames (approx 1 sec)
@@ -372,11 +373,16 @@
                 ctx.translate(currentOffsetX, 0); // Apply constant lane offset
 
                 // Draw Image Centered
-                // Global Alpha? User said "Use transparent of wall.png". 
-                // Images are likely PNGs with transparency.
-                // ctx.globalAlpha = 1.0; 
+                // Global Alpha from CONFIG
+                ctx.globalAlpha = GAME_CONFIG.wallOpacity;
 
-                ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+                // Draw specific pose wall
+                if (IMAGES[this.type]) {
+                    ctx.drawImage(IMAGES[this.type], -drawW / 2, -drawH / 2, drawW, drawH);
+                }
+
+                // Reset Alpha for text/other draws
+                ctx.globalAlpha = 1.0;
 
                 ctx.restore();
 
