@@ -704,10 +704,7 @@
                 // Wrists above Nose
                 const handsUp = lWrist.y < nose.y && rWrist.y < nose.y;
                 // Wide Arms (X > Shoulders significantly)
-                const armsWide = lWrist.x > lShoulder.x && rWrist.x < rShoulder.x; // Mirror?
-                // Wait, landmarks x: 0 is left side of image. If mirrored, it's user's right.
-                // Left Wrist (person's left) should be X > Left Shoulder (person's left).
-                // Actually, let's just check absolute width > shoulder width * 1.5
+                // Relaxed: 1.2 -> 0.8 to be more generous
                 const shoulderWidth = Math.abs(lShoulder.x - rShoulder.x);
                 const wristWidth = Math.abs(lWrist.x - rWrist.x);
 
@@ -716,7 +713,7 @@
                 const rAnkle = landmarks[28];
                 const ankleWidth = Math.abs(lAnkle.x - rAnkle.x);
 
-                return handsUp && (wristWidth > shoulderWidth * 1.2) && (ankleWidth > shoulderWidth * 1.2);
+                return handsUp && (wristWidth > shoulderWidth * 0.8) && (ankleWidth > shoulderWidth * 0.8);
             } else if (wall.type === 'T') {
                 // Wrist Y ~ Shoulder Y
                 const yDiff = Math.abs(lWrist.y - lShoulder.y) < 0.15 && Math.abs(rWrist.y - rShoulder.y) < 0.15;
@@ -763,10 +760,9 @@
 
         function drawLaneMarker(ctx, w, h, lane) {
             // Draw "Stand Here" arrow
-            // Lane -1: Left (Normalized 0.8 in Mirror space... wait. 
-            // In Draw Space (Flipped): Lane -1 is +0.3 offset.
-            // Lane 1 is -0.3 offset.
-            const offsetNorm = lane * -0.3;
+            // Lane -1: Left (Normalized 0.8 in Mirror space)
+            // Fix: Changed from -0.3 to +0.3 to match Wall drawing logic (Visual Right for -1)
+            const offsetNorm = lane * 0.3;
             const x = w / 2 + (w * offsetNorm);
             const y = h - 50;
 
