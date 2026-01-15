@@ -243,6 +243,14 @@
         let currentWall = null;
         let latestResults = null;
 
+        // --- TEST MODE STATE ---
+        let isTestMode = false;
+        let testState = {
+            laneOrder: [-1, 0, 1],
+            currentLaneIndex: 0,
+            poseIndex: 0
+        };
+
         // --- EFFECT STATE ---
         let effectState = {
             type: null,        // 'clear', 'miss', or null
@@ -356,7 +364,7 @@
             // Define Expected Keys per State
             let expected = [];
             if (gameState === 'MENU' || gameState === 'GAMEOVER') {
-                expected = ['s', 'S'];
+                expected = ['s', 'S', 't', 'T'];
             }
 
             // If we have specific expectations and key is NOT in them
@@ -375,10 +383,30 @@
             // If valid or no strict expectations (like Playing), log as normal key
             sendKeyLog(key);
 
-            // Game Control: hit 'S' to start/retry
             if ((key === 's' || key === 'S')) {
                 if (gameState === 'MENU' || gameState === 'GAMEOVER') {
                     startGame();
+                }
+            }
+
+            // Test Mode Toggle
+            if ((key === 't' || key === 'T')) {
+                if (gameState === 'MENU' || gameState === 'GAMEOVER') {
+                    isTestMode = !isTestMode;
+                    const modeText = isTestMode ? "TEST MODE" : "NORMAL MODE";
+                    const color = isTestMode ? "#00FFFF" : "#FFCC00";
+
+                    // Visual Feedback
+                    const originalTitle = titleText.innerText;
+                    statusText.innerText = `MODE SWITCHED: ${modeText}`;
+                    statusText.style.color = color;
+
+                    // Flash effect on title
+                    titleText.style.color = color;
+                    setTimeout(() => {
+                        titleText.style.color = "#ff0055"; // Revert to original pink
+                        if (gameState === 'MENU') statusText.innerText = "Are you ready?";
+                    }, 1000);
                 }
             }
         });
@@ -446,11 +474,34 @@
         class Wall {
             constructor() {
                 this.z = GAME_CONFIG.wallStartZ;
-                this.type = GAME_CONFIG.poses[Math.floor(Math.random() * GAME_CONFIG.poses.length)];
-                this.color = `hsl(${Math.random() * 360}, 70%, 50%)`;
 
-                // Lane System (Left:-1, Center:0, Right:1)
-                this.lane = Math.floor(Math.random() * 3) - 1;
+                if (isTestMode) {
+                    // Test Mode: Deterministic Cycle
+                    // Lane Order: Left -> Center -> Right
+                    // Pose Order: All poses per lane
+
+                    this.type = GAME_CONFIG.poses[testState.poseIndex];
+                    this.lane = testState.laneOrder[testState.currentLaneIndex];
+                    this.color = `hsl(${(testState.poseIndex * 50) % 360}, 70%, 50%)`;
+
+                    // Increment Logic
+                    testState.poseIndex++;
+                    if (testState.poseIndex >= GAME_CONFIG.poses.length) {
+                        testState.poseIndex = 0;
+                        testState.currentLaneIndex++;
+                        if (testState.currentLaneIndex >= testState.laneOrder.length) {
+                            testState.currentLaneIndex = 0; // Loop back to first lane
+                        }
+                    }
+
+                } else {
+                    // Normal Mode: Random
+                    this.type = GAME_CONFIG.poses[Math.floor(Math.random() * GAME_CONFIG.poses.length)];
+                    this.color = `hsl(${Math.random() * 360}, 70%, 50%)`;
+
+                    // Lane System (Left:-1, Center:0, Right:1)
+                    this.lane = Math.floor(Math.random() * 3) - 1;
+                }
 
                 this.laneOffsetNorm = this.lane * -0.3;
             }
@@ -624,8 +675,10 @@
             // Lane -1 (Left on Screen/Right in Mirror): X ~ 0.8
             // Lane 0: X ~ 0.5
             // Lane 1: X ~ 0.2
-            // Formula: 0.5 - (lane * 0.3)
-            const targetX = 0.5 - (wall.lane * 0.3);
+            // Formula: 0.5 + (lane * 0.3) to match mirrored view
+            // Lane -1 (Visual Right) -> 0.5 - 0.3 = 0.2 (Raw Left)
+            // Lane 1 (Visual Left) -> 0.5 + 0.3 = 0.8 (Raw Right)
+            const targetX = 0.5 + (wall.lane * 0.3);
 
             if (Math.abs(hipCenterX - targetX) > 0.15) { // 15% tolerance
                 // FAIL POSITION
@@ -768,6 +821,9 @@
 
                 // Difficulty Increase (Unlimited)
                 currentSpeed += GAME_CONFIG.speedIncrement;
+                if (isTestMode && currentSpeed > 10.0) {
+                    currentSpeed = 10.0;
+                }
 
             } else {
                 effectState.type = 'miss';
@@ -992,6 +1048,13 @@
             lives = 3;
             currentSpeed = GAME_CONFIG.initialSpeed;
             spawnTimer = 2000; // Initial delay
+
+            // Reset Test State if needed
+            if (isTestMode) {
+                testState.currentLaneIndex = 0;
+                testState.poseIndex = 0;
+                // Maybe keep logs noting it's a test?
+            }
 
             scoreDisplay.innerText = "SCORE: " + score;
             updateLives();
