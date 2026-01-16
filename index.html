@@ -684,7 +684,7 @@
                 const shoulderWidth = Math.abs(lShoulder.x - rShoulder.x);
                 const ankleWidth = Math.abs(lAnkle.x - rAnkle.x);
                 const squatDepth = Math.min(Math.abs(lHip.y - lKnee.y), Math.abs(rHip.y - rKnee.y));
-                return (ankleWidth > shoulderWidth * 2.0) && (squatDepth < 0.2);
+                return (ankleWidth > shoulderWidth * 1.5) && (squatDepth < 0.3);
             } else if (wall.type === 'KICK') {
                 const lAnkle = landmarks[27];
                 const rAnkle = landmarks[28];
