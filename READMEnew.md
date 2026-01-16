@@ -409,3 +409,38 @@ function sendKeyLog(keyName, note = "") {
 
 * ゲーム完了時点のスコアやどの位置・ポーズをクリアしたのか、どの位置・ポーズを失敗したのかをGASに記載させる様にindex.htmlを修正してください。
 * 誤操作を特定したいです。画面上の指示とは異なるキー操作が行われた場合には、補足情報として記入するようにしたい
+
+## 16. カロリー計算仕様
+ゲーム終了（Game Over または Clear）時に、プレイヤーの運動量に基づいた「推定消費カロリー」を算出し、リザルト画面に表示する。
+
+算出は「移動距離」と「ポーズ維持時間」を加算する。
+
+### 16-1. データ要件（トラッキング変数）
+ゲームループ（update関数内）にて、以下の変数をリアルタイムに更新・保持すること。
+変数名型説明更新タイミングtotal_move_distanceFloatプレイヤーの鼻(Nose)のX座標の移動量累積値（ピクセル単位）abs(current_x - prev_x)を加算。毎フレームpose_duration_mapDictionary各ポーズごとの維持時間を記録するマップ。例: {"squat": 12.5, "y_pose": 5.0, ...}壁待ち状態中（毎フレーム delta_timeを加算）perfect_countInteger判定が「Perfect」だった回数。壁通過判定時total_wall_countInteger通過した壁の総数。壁通過判定時
+
+### 16-2. 定数定義（係数設定）カロリー計算に使用する係数
+
+* 係数は標準体型成人のMETs値を参考にしたゲーム内推定値）。
+
+* 移動係数CALORIE_PER_PIXEL: 0.0005 kcal/px補足: 画面幅(例:1920px)を端から端まで2往復程度して約2kcal消費する想定。壁をクリア時に人は常に中央に戻る事を想定し、毎回加算する。
+* ポーズ強度係数 (CALORIE_PER_SEC)ポーズごとの1秒あたりの消費カロリー。カテゴリ該当ポーズ係数 (kcal/sec)高強度Squat (しゃがむ), Sumo (四股)0.12中強度SideKick (キック), Flamingo (片足立ち), Y_Pose (バンザイ), T_Pose0.08低強度I_Pose (気をつけ), その他デフォルト0.05
+
+
+### 16-3. 算出ロジック
+ゲーム終了処理（show_result等）にて以下の計算を行う。
+Pythondef calculate_calories():
+    # 1. 移動による消費
+    movement_cal = 左右への移動回数 * 0.25kcal
+
+    # 2. ポーズ維持による消費
+    pose_cal += GET_POSE_INTENSITY(pose_name) # 上記定数テーブル参照
+
+    # 3. 基礎合計
+    base_total = movement_cal + pose_cal
+
+    # 4. 表示用に整形（小数点第2位四捨五入など）
+    return round(base_total, 1)
+
+### 16-4. UI表示仕様表示タイミング
+ゲーム終了時のリザルト画面（スコア表示の近く）。表示テキスト:日本語: 燃焼カロリー: 約 {cal} kcal

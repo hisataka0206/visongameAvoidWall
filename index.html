@@ -5,11 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>キメポ -KiMePose-</title>
-    <!-- MediaPipe Pose -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"
-        crossorigin="anonymous"></script>
+    <!-- MediaPipe Tasks Vision (Loaded dynamically in module) -->
 
     <style>
         body {
@@ -161,7 +157,7 @@
 <body>
 
     <div id="game-container">
-        <video id="input_video"></video>
+        <video id="input_video" playsinline></video>
         <canvas id="output_canvas"></canvas>
 
         <div id="ui-layer">
@@ -202,7 +198,7 @@
         </div>
     </div>
 
-    <script>
+    <script type="module">
         // --- 1. CONFIG OBJECT ---
         const GAME_CONFIG = {
             poses: ['Y', 'I', 'SQUAT', 'X', 'T', 'FLAMINGO', 'SUMO', 'KICK'],
@@ -214,6 +210,16 @@
             judgementFrameCount: 5,  // Not strictly used with current Z-logic, but conceptually good
             wallStartZ: 100,         // Start distance
             wallOpacity: 0.8         // Wall Image Opacity (0.0 to 1.0)
+        };
+
+        // --- CALORIE CONFIG ---
+        const CALORIE_CONFIG = {
+            PER_PIXEL: 0.0005, // kcal per pixel movement
+            POSE_INTENSITY: {
+                'SQUAT': 0.12, 'SUMO': 0.12,
+                'KICK': 0.08, 'FLAMINGO': 0.08, 'Y': 0.08, 'X': 0.08, 'T': 0.08,
+                'I': 0.05, 'DEFAULT': 0.05
+            }
         };
 
         const EFFECT_DURATION = 60; // Frames (approx 1 sec)
@@ -258,6 +264,18 @@
             shakeIntensity: 0  // Pixel offset
         };
 
+        // --- CALORIE STATE ---
+        let totalMoveDistance = 0;
+        let poseDurationMap = {}; // { 'SQUAT': 0.0, ... }
+        let lastNoseX = null;
+        let nextPoseType = null; // Decided at start of WAIT
+
+        // --- MEDIAPIPE TASKS ---
+        let poseLandmarker = undefined;
+        let drawingUtils = undefined;
+        let POSE_CONNECTIONS = null;
+        let lastVideoTime = -1;
+
         // --- IMGAES ---
         const IMAGES = {};
         const IMAGE_SOURCES = {
@@ -272,6 +290,7 @@
             'KICK': './wall/wallKick50tr.png'
         };
         let assetsLoaded = false;
+        let visionLoaded = false;
 
         // --- SOUND ---
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -308,12 +327,9 @@
         const GAME_NAME = "AvoidWall_v1";
         const SESSION_ID = "sesswall_" + Math.random().toString(36).substr(2, 9);
 
-        // Send Log (Generic)
-        // Send Log (Generic)
         function sendLog(data) {
             console.log(`[PoC Log]`, data);
 
-            // Mapper: keys to 'key' and 'note'
             let logKey = "";
             let logNote = "";
 
@@ -330,7 +346,6 @@
                 logKey = data.event.toUpperCase(); // CLEAR / MISS
                 logNote = `Pose: ${data.pose}, Lane: ${data.lane}, Score: ${data.score || ""}, Lives: ${data.lives || ""}`;
             } else {
-                // Fallback
                 logKey = data.type || "UNKNOWN";
                 logNote = JSON.stringify(data);
             }
@@ -351,7 +366,6 @@
             }).catch(e => console.error("Log Error:", e));
         }
 
-        // Backward compatibility / Helper for keys
         function sendKeyLog(keyName, note = "") {
             sendLog({ type: 'key', key: keyName, note: note });
         }
@@ -360,14 +374,11 @@
         window.addEventListener('keydown', (e) => {
             const key = e.key;
 
-            // Logic for Erroneous Input Logging
-            // Define Expected Keys per State
             let expected = [];
             if (gameState === 'MENU' || gameState === 'GAMEOVER') {
                 expected = ['s', 'S', 't', 'T'];
             }
 
-            // If we have specific expectations and key is NOT in them
             if (expected.length > 0 && !expected.includes(key)) {
                 sendLog({
                     type: 'erroneous_input',
@@ -376,11 +387,9 @@
                     expected: expected,
                     description: "User pressed unexpected key for current screen."
                 });
-                return; // Do not process invalid keys further (or log as generic key?) 
-                // If we return, we stop 'sendKeyLog' spam.
+                return;
             }
 
-            // If valid or no strict expectations (like Playing), log as normal key
             sendKeyLog(key);
 
             if ((key === 's' || key === 'S')) {
@@ -396,40 +405,80 @@
                     const modeText = isTestMode ? "TEST MODE" : "NORMAL MODE";
                     const color = isTestMode ? "#00FFFF" : "#FFCC00";
 
-                    // Visual Feedback
                     const originalTitle = titleText.innerText;
                     statusText.innerText = `MODE SWITCHED: ${modeText}`;
                     statusText.style.color = color;
 
-                    // Flash effect on title
                     titleText.style.color = color;
                     setTimeout(() => {
-                        titleText.style.color = "#ff0055"; // Revert to original pink
+                        titleText.style.color = "#ff0055";
                         if (gameState === 'MENU') statusText.innerText = "Are you ready?";
                     }, 1000);
                 }
             }
         });
 
-        // --- MEDIA PIPE ---
-        function onResults(results) {
-            latestResults = results;
-            if (gameState === 'LOADING' && assetsLoaded) {
-                gameState = 'MENU';
-                statusText.innerText = "Are you ready?";
-                startInstruction.innerText = 'Press "S" to GAME START';
-                startInstruction.style.display = 'block';
-            }
+        // --- MEDIA PIPE INITIALIZATION ---
+        async function setupMediaPipe() {
+            const { PoseLandmarker, FilesetResolver, DrawingUtils: MPDrawingUtils } = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/vision_bundle.js");
+
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
+            );
+
+            poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numPoses: 5,
+                minPoseDetectionConfidence: 0.5,
+                minPosePresenceConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            drawingUtils = new MPDrawingUtils(canvasCtx);
+            POSE_CONNECTIONS = PoseLandmarker.POSE_CONNECTIONS;
+
+            visionLoaded = true;
+            console.log("MediaPipe Pose Landmarker Loaded");
+            checkReady();
         }
 
-        const pose = new Pose({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
-        pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, enableSegmentation: false, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-        pose.onResults(onResults);
+        setupMediaPipe();
 
-        const camera = new Camera(videoElement, {
-            onFrame: async () => { await pose.send({ image: videoElement }); },
-            width: 1280, height: 720
-        });
+        // Start Camera
+        const enableWebcam = () => {
+            if (!poseLandmarker) {
+                console.log("Wait for poseLandmarker to load before enabling webcam");
+                return;
+            }
+
+            const constraints = {
+                video: { width: 1280, height: 720 }
+            };
+
+            navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+                videoElement.srcObject = stream;
+                videoElement.addEventListener("loadeddata", () => {
+                    videoElement.play();
+
+                    // Start Game Loop if not already
+                    if (gameState !== 'PLAYING') {
+                        // Just ensure loop is running, standard RAF is at bottom
+                    }
+
+                    // Initial State Transition if ready
+                    if (gameState === 'LOADING' && assetsLoaded && visionLoaded) {
+                        gameState = 'MENU';
+                        statusText.innerText = "Are you ready?";
+                        startInstruction.innerText = 'Press "S" to GAME START';
+                        startInstruction.style.display = 'block';
+                    }
+                });
+            });
+        };
 
         // Load assets then start camera
         function loadAssets() {
@@ -461,185 +510,108 @@
         }
 
         function checkReady() {
-            if (assetsLoaded) {
+            if (assetsLoaded && visionLoaded) {
                 statusText.innerText = "Allow camera access to play!";
                 startInstruction.innerText = "Waiting for Camera...";
-                camera.start();
+                enableWebcam(); // Replaces camera.start()
             }
         }
 
         loadAssets();
 
+        // --- CALORIE FUNCTIONS ---
+        function calculateCalories() {
+            const movementCal = totalMoveDistance * CALORIE_CONFIG.PER_PIXEL;
+            let poseCal = 0;
+            for (let pose in poseDurationMap) {
+                const duration = poseDurationMap[pose];
+                const intensity = CALORIE_CONFIG.POSE_INTENSITY[pose] || CALORIE_CONFIG.POSE_INTENSITY['DEFAULT'];
+                poseCal += duration * intensity;
+            }
+            return (movementCal + poseCal).toFixed(1);
+        }
+
+        function getNextPoseType() {
+            if (isTestMode) {
+                return GAME_CONFIG.poses[testState.poseIndex];
+            } else {
+                return GAME_CONFIG.poses[Math.floor(Math.random() * GAME_CONFIG.poses.length)];
+            }
+        }
+
         // --- GAME CLASSES ---
         class Wall {
-            constructor() {
+            constructor(specificType = null) {
                 this.z = GAME_CONFIG.wallStartZ;
 
                 if (isTestMode) {
-                    // Test Mode: Deterministic Cycle
-                    // Lane Order: Left -> Center -> Right
-                    // Pose Order: All poses per lane
-
-                    this.type = GAME_CONFIG.poses[testState.poseIndex];
+                    this.type = specificType || GAME_CONFIG.poses[testState.poseIndex];
                     this.lane = testState.laneOrder[testState.currentLaneIndex];
                     this.color = `hsl(${(testState.poseIndex * 50) % 360}, 70%, 50%)`;
-
-                    // Increment Logic
-                    testState.poseIndex++;
-                    if (testState.poseIndex >= GAME_CONFIG.poses.length) {
-                        testState.poseIndex = 0;
-                        testState.currentLaneIndex++;
-                        if (testState.currentLaneIndex >= testState.laneOrder.length) {
-                            testState.currentLaneIndex = 0; // Loop back to first lane
-                        }
-                    }
-
                 } else {
-                    // Normal Mode: Random
-                    this.type = GAME_CONFIG.poses[Math.floor(Math.random() * GAME_CONFIG.poses.length)];
+                    this.type = specificType || GAME_CONFIG.poses[Math.floor(Math.random() * GAME_CONFIG.poses.length)];
                     this.color = `hsl(${Math.random() * 360}, 70%, 50%)`;
-
-                    // Lane System (Left:-1, Center:0, Right:1)
                     this.lane = Math.floor(Math.random() * 3) - 1;
                 }
-
                 this.laneOffsetNorm = this.lane * -0.3;
             }
 
             update(dt) {
-                // Config-based speed
-                // dt is in ms. Speed is unit/sec? Let's treat Speed as unit per second.
-                this.z -= currentSpeed * (dt / 1000) * 5; // Adjust multiplier to feel right
+                this.z -= currentSpeed * (dt / 1000) * 5;
             }
 
             draw(ctx, width, height) {
                 const maxZ = GAME_CONFIG.wallStartZ;
                 let progress = 1 - (this.z / maxZ);
-                // Clamp progress
                 if (progress < 0) progress = 0;
                 if (progress > 1) progress = 1;
 
-                // Specific Scaling Requirement:
-                // Min: 0 (at progress 0)
-                // Max: Screen Size (at progress 1)
-                // Maintain Aspect Ratio.
-
-                // Get Image to draw
                 const img = IMAGES[this.type];
                 if (!img) return;
 
-                // Determine Base Size (at progress 1)
-                // Fit to screen (Contain) or Cover? 
-                // "Max is screen size" -> Let's ensure it fits within the screen (Math.min) 
-                // or covers (Math.max) to be a proper wall?
-                // Usually walls cover. But let's start with 'Contain' to ensure full visibility,
-                // or match the larger dimension to ensure it blocks the view.
-                // Let's use "Cover" logic (Math.max) so there are no empty gaps if aspect ratios differ slightly.
-                // Actually, if I use Math.max, I might crop the top/bottom if screen is tall.
-                // Let's use Math.min for "Screen Size" (it won't exceed screen).
-
                 const imgW = img.naturalWidth || img.width;
                 const imgH = img.naturalHeight || img.height;
-                // Avoid division by zero
                 if (imgW === 0 || imgH === 0) return;
 
                 const scaleW = width / imgW;
                 const scaleH = height / imgH;
-
-                // "Max is screen size" implies fitting the screen.
                 const baseScale = Math.min(scaleW, scaleH);
-
-                // Apply Progress
                 const finalScale = baseScale * progress;
 
-                // Calculate Dimensions
                 const drawW = imgW * finalScale;
                 const drawH = imgH * finalScale;
 
-                // Calculate Draw Offset (Lane)
-                // Lane offset should also scale? 
-                // Perspective: Things far away move less in screen pixels.
-                // Lane position is X coordinate.
-                // At z=max (progress 0), offset should be near 0 (vanishing point).
-                // At z=0 (progress 1), offset should be full lane width.
-                // My Lane logic: `wall.lane` (-1, 0, 1).
-                // Screen X = Center + (LaneOffset * Scale?).
-                // Usually X = x_world / z. 
-                // Here `progress` is roughly `1/z` factor relative to screen.
-                // So `offsetX = maxLaneOffset * progress`.
-                // Lane spacing: lets say 30% of screen width.
                 const laneScreenOffset = (width * 0.3) * this.lane;
-                // User Requirement: Keep horizontal position constant (match max size position).
-                // Do not scale offset by progress.
                 const currentOffsetX = laneScreenOffset;
 
                 ctx.save();
                 ctx.translate(width / 2, height / 2);
-                ctx.translate(currentOffsetX, 0); // Apply constant lane offset
-
-                // Draw Image Centered
-                // Global Alpha from CONFIG
+                ctx.translate(currentOffsetX, 0);
                 ctx.globalAlpha = GAME_CONFIG.wallOpacity;
 
-                // Draw specific pose wall
                 if (IMAGES[this.type]) {
                     ctx.drawImage(IMAGES[this.type], -drawW / 2, -drawH / 2, drawW, drawH);
                 }
 
-                // Reset Alpha for text/other draws
                 ctx.globalAlpha = 1.0;
-
                 ctx.restore();
 
-                // Text Rendering (Scaled and Positioned same as wall)
                 ctx.save();
                 ctx.translate(width / 2, height / 2);
                 ctx.translate(currentOffsetX, 0);
-
-                // Scale text with wall? Or just position it?
-                // If wall is tiny, text overlap?
-                // Let's scale text position, but keep text size readable? 
-                // Or scale text too.
-                // "Scaling: Min is zero..." implies everything scales.
-                ctx.scale(-progress, progress); // Text scales with wall (and un-mirrors)
+                ctx.scale(-progress, progress);
 
                 ctx.fillStyle = "white";
                 ctx.font = "bold 40px Arial";
                 ctx.textAlign = "center";
                 ctx.shadowColor = "black";
                 ctx.shadowBlur = 4;
-                // Position text above the image (Relative to raw image size)
-                // We are scaled by `progress` here.
-                // But we need to be relative to the *drawn* image size in this context.
-                // If we use ctx.scale(progress), then we draw at "Full Size Coords".
-                // Full Size Height is `drawH / progress` = `imgH * baseScale`.
-                // So top is `- (imgH * baseScale) / 2`.
 
                 const fullSizeH = imgH * baseScale;
-                const textY = -fullSizeH / 2 - 50; // 50px padding above
+                const textY = -fullSizeH / 2 - 50;
 
                 ctx.fillText(this.targetPoseName(this.type), 0, textY);
                 ctx.restore();
-            }
-
-            getDrawOffsetX(width, scale) {
-                // Determine Offset in "Wall Coordinate Space" (Post-Scale)
-                // We want the HOLE to align with the Lane on screen.
-                // Lane Targets (Screen Pixels): 
-                // Lane -1: Width * 0.8 (Screen Right, Mirror Left) -> Wait.
-                // Let's re-verify Lane Logic.
-                // constructor: laneOffsetNorm = lane * -0.3.
-                // Lane -1 -> +0.3. Lane 1 -> -0.3.
-                // If Width=1000. Center=500.
-                // Lane -1 Target = 500 + 300 = 800 (Screen Right).
-                // Lane 1 Target = 500 - 300 = 200 (Screen Left).
-                // Wall Draw: Translated to Center (500).
-                // Scale = S.
-                // Offset needed (D) such that D * S = Target - Center = 300.
-                // D = 300 / S.
-                // D = (width * this.laneOffsetNorm) / scale.
-
-                return (width * this.laneOffsetNorm) / scale;
             }
 
             targetPoseName(type) {
@@ -655,8 +627,6 @@
                     default: return "";
                 }
             }
-
-            // pathHole removed (replaced by images)
         }
 
         function checkCollision(wall, landmarks) {
@@ -669,55 +639,35 @@
             const rHip = landmarks[24];
 
             // --- 1. LANE CHECK ---
-            // Calculate Hip Center X
             const hipCenterX = (lHip.x + rHip.x) / 2;
-            // Target X Logic:
-            // Lane -1 (Left on Screen/Right in Mirror): X ~ 0.8
-            // Lane 0: X ~ 0.5
-            // Lane 1: X ~ 0.2
-            // Formula: 0.5 + (lane * 0.3) to match mirrored view
-            // Lane -1 (Visual Right) -> 0.5 - 0.3 = 0.2 (Raw Left)
-            // Lane 1 (Visual Left) -> 0.5 + 0.3 = 0.8 (Raw Right)
             const targetX = 0.5 + (wall.lane * 0.3);
 
-            if (Math.abs(hipCenterX - targetX) > 0.15) { // 15% tolerance
-                // FAIL POSITION
+            if (Math.abs(hipCenterX - targetX) > 0.15) {
                 return false;
             }
 
             // --- 2. POSE CHECK ---
-
             if (wall.type === 'Y') {
                 const handsUp = lWrist.y < nose.y && rWrist.y < nose.y;
                 return handsUp;
             }
             else if (wall.type === 'I') {
-                // Relaxed I-pose: Allow hands to be slightly above hip level (hip.y - 0.1)
                 const handsDown = lWrist.y > (lHip.y - 0.1) && rWrist.y > (rHip.y - 0.1);
-                // Widened X threshold to 0.25
                 const handsIn = Math.abs(lWrist.x - lHip.x) < 0.25 && Math.abs(rWrist.x - rHip.x) < 0.25;
                 return handsDown && handsIn;
             }
             else if (wall.type === 'SQUAT') {
                 return nose.y > 0.4;
             } else if (wall.type === 'X') {
-                // Wrists above Nose
                 const handsUp = lWrist.y < nose.y && rWrist.y < nose.y;
-                // Wide Arms (X > Shoulders significantly)
-                // Relaxed: 1.2 -> 0.8 to be more generous
                 const shoulderWidth = Math.abs(lShoulder.x - rShoulder.x);
                 const wristWidth = Math.abs(lWrist.x - rWrist.x);
-
-                // Ankles Wide
                 const lAnkle = landmarks[27];
                 const rAnkle = landmarks[28];
                 const ankleWidth = Math.abs(lAnkle.x - rAnkle.x);
-
                 return handsUp && (wristWidth > shoulderWidth * 0.8) && (ankleWidth > shoulderWidth * 0.8);
             } else if (wall.type === 'T') {
-                // Wrist Y ~ Shoulder Y
                 const yDiff = Math.abs(lWrist.y - lShoulder.y) < 0.15 && Math.abs(rWrist.y - rShoulder.y) < 0.15;
-                // Wide
                 const shoulderWidth = Math.abs(lShoulder.x - rShoulder.x);
                 const wristWidth = Math.abs(lWrist.x - rWrist.x);
                 return yDiff && (wristWidth > shoulderWidth * 2.0);
@@ -731,37 +681,23 @@
                 const rAnkle = landmarks[28];
                 const lKnee = landmarks[25];
                 const rKnee = landmarks[26];
-
-                // Wide Stance (Ankle X spread)
                 const shoulderWidth = Math.abs(lShoulder.x - rShoulder.x);
                 const ankleWidth = Math.abs(lAnkle.x - rAnkle.x);
-                // Low Hips (Y check) - Hips lower than or close to knees? 
-                // Or just normalized height. 
-                // Let's check Knee Y vs Hip Y. In deep squat, Hip Y is close to Knee Y.
-                // Normal standing: Hip Y << Knee Y (Upside down? No Y=0 top. Hip < Knee)
-                // Squat: Hip Y increases (goes down).
                 const squatDepth = Math.min(Math.abs(lHip.y - lKnee.y), Math.abs(rHip.y - rKnee.y));
-
-                return (ankleWidth > shoulderWidth * 2.0) && (squatDepth < 0.2); // Hips close to knees vertical
+                return (ankleWidth > shoulderWidth * 2.0) && (squatDepth < 0.2);
             } else if (wall.type === 'KICK') {
                 const lAnkle = landmarks[27];
                 const rAnkle = landmarks[28];
                 const lHip = landmarks[23];
-                // One Foot High (Y < Hip?)
-                // Or just one foot significantly higher than other
-                const footHigh = (lAnkle.y < lHip.y + 0.1) || (rAnkle.y < rHip.y + 0.1); // Near hip level
+                const footHigh = (lAnkle.y < lHip.y + 0.1) || (rAnkle.y < rHip.y + 0.1);
                 return footHigh;
             }
             return false;
         }
 
-        // Helper for independent math (Math.dist not builtin)
         Math.dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
 
         function drawLaneMarker(ctx, w, h, lane) {
-            // Draw "Stand Here" arrow
-            // Lane -1: Left (Normalized 0.8 in Mirror space)
-            // Fix: Changed from -0.3 to +0.3 to match Wall drawing logic (Visual Right for -1)
             const offsetNorm = lane * 0.3;
             const x = w / 2 + (w * offsetNorm);
             const y = h - 50;
@@ -771,7 +707,6 @@
             ctx.strokeStyle = "black";
             ctx.lineWidth = 3;
 
-            // Arrow
             ctx.beginPath();
             ctx.moveTo(x, y);
             ctx.lineTo(x - 30, y + 30);
@@ -780,16 +715,8 @@
             ctx.fill();
             ctx.stroke();
 
-            // Text
-            // Context is Mirrored (from GameLoop). X points Left.
-            // We want text readable. Flip X.
             ctx.scale(-1, 1);
             ctx.textAlign = "center";
-            // Since we flipped X, position 'x' (which is positive) becomes negative in new system?
-            // No, scale applies to future coords.
-            // If we draw at x, it draws at -x (Right).
-            // Current X (lane pos) is in Mirrored space.
-            // If we Flip X, we need to pass -x to draw at correct visual spot.
             ctx.fillText("STAND HERE", -x, -(y + 40));
             ctx.restore();
         }
@@ -803,7 +730,6 @@
                 effectState.shakeIntensity = 0;
                 playSound('success');
 
-                // Log Clear
                 if (currentWall) {
                     sendLog({
                         type: 'event',
@@ -815,7 +741,6 @@
                     });
                 }
 
-                // Difficulty Increase (Unlimited)
                 currentSpeed += GAME_CONFIG.speedIncrement;
                 if (isTestMode && currentSpeed > 10.0) {
                     currentSpeed = 10.0;
@@ -825,7 +750,6 @@
                 effectState.type = 'miss';
                 effectState.timer = EFFECT_DURATION;
                 effectState.shakeIntensity = 20;
-                // Log Miss
                 if (currentWall) {
                     sendLog({
                         type: 'event',
@@ -841,18 +765,7 @@
 
         function drawEffectsAndUI(ctx, width, height) {
             if (effectState.timer > 0) {
-                // A. Shake (Handled in main loop before this, well, we can't un-draw video. 
-                // So Shake must apply to Everything or just UI? 
-                // PROMPT said: "Canvas 전체をランダムにずらして". This implies we should have translated BEFORE drawing video.
-                // But we can't change the past. 
-                // Effectively, we should move the shake logic to start of gameLoop. 
-                // I will implement that in gameLoop structure.
-
-                // B. Flash
                 ctx.save();
-                // Removed un-mirror logic as CSS mirror is gone and this runs in clean context
-
-                // Flash Color
                 let alpha = (effectState.timer / EFFECT_DURATION) * 0.6;
                 if (effectState.type === 'clear') {
                     ctx.fillStyle = `rgba(0, 255, 100, ${alpha})`;
@@ -861,7 +774,6 @@
                 }
                 ctx.fillRect(0, 0, width, height);
 
-                // C. Text
                 ctx.textAlign = "center";
                 ctx.textBaseline = "middle";
                 ctx.font = "italic 900 100px Arial";
@@ -879,16 +791,12 @@
                 }
 
                 ctx.restore();
-
-                // D. Update Timer
                 effectState.timer--;
-                if (effectState.shakeIntensity > 0) effectState.shakeIntensity *= 0.9; // Damping
+                if (effectState.shakeIntensity > 0) effectState.shakeIntensity *= 0.9;
             }
 
-            // Draw Countdown/Status if waiting
             if (subState === 'WAIT') {
                 ctx.save();
-                // Removed un-mirror logic
 
                 ctx.textAlign = "center";
                 ctx.textBaseline = "middle";
@@ -904,7 +812,6 @@
                     ctx.fillText("READY?", width / 2, height / 3);
                 }
 
-                // Draw Current Speed
                 ctx.font = "bold 30px Arial";
                 ctx.fillText(`LEVEL: ${currentSpeed.toFixed(1)}`, width / 2, height / 3 + 60);
 
@@ -923,6 +830,49 @@
             const w = canvasElement.width;
             const h = canvasElement.height;
 
+            // --- DETECT POSE ---
+            if (poseLandmarker && videoElement.currentTime !== lastVideoTime && videoElement.videoWidth > 0) {
+                lastVideoTime = videoElement.currentTime;
+                const poseResult = poseLandmarker.detectForVideo(videoElement, timestamp);
+
+                // --- LARGEST SKELETON PRIORITY LOGIC ---
+                // "results.landmarks" is Array of Arrays (one per person)
+                if (poseResult.landmarks && poseResult.landmarks.length > 0) {
+                    let maxArea = -1;
+                    let maxIndex = -1;
+
+                    for (let i = 0; i < poseResult.landmarks.length; i++) {
+                        const landmarks = poseResult.landmarks[i];
+                        let minX = 1.0, maxX = 0.0, minY = 1.0, maxY = 0.0;
+
+                        // Simple Bounding Box
+                        landmarks.forEach(lm => {
+                            if (lm.x < minX) minX = lm.x;
+                            if (lm.x > maxX) maxX = lm.x;
+                            if (lm.y < minY) minY = lm.y;
+                            if (lm.y > maxY) maxY = lm.y;
+                        });
+
+                        const area = (maxX - minX) * (maxY - minY);
+                        if (area > maxArea) {
+                            maxArea = area;
+                            maxIndex = i;
+                        }
+                    }
+
+                    // Filter to only the largest
+                    if (maxIndex !== -1) {
+                        latestResults = {
+                            poseLandmarks: poseResult.landmarks[maxIndex],
+                            poseWorldLandmarks: poseResult.worldLandmarks[maxIndex] // Also take world landmarks if available
+                        };
+                    }
+                } else {
+                    latestResults = null;
+                }
+            }
+
+
             // --- SHAKE LOGIC START ---
             canvasCtx.save();
             if (effectState.timer > 0 && effectState.shakeIntensity > 0) {
@@ -938,55 +888,80 @@
             canvasCtx.save();
             canvasCtx.scale(-1, 1);
             canvasCtx.translate(-w, 0);
-            canvasCtx.drawImage(videoElement, 0, 0, w, h);
+            if (videoElement.readyState >= 2) { // HAVE_CURRENT_DATA
+                canvasCtx.drawImage(videoElement, 0, 0, w, h);
+            }
             canvasCtx.restore();
 
             // Draw Skeleton
-            // Note: Skeleton coords are 0-1. drawConnectors uses them.
-            // We need to apply mirror transform for them to match video.
             canvasCtx.save();
             canvasCtx.scale(-1, 1);
             canvasCtx.translate(-w, 0);
             if (latestResults && latestResults.poseLandmarks) {
-                drawConnectors(canvasCtx, latestResults.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
-                drawLandmarks(canvasCtx, latestResults.poseLandmarks, { color: '#FF0000', lineWidth: 2 });
+                if (drawingUtils) {
+                    // Use new DrawingUtils
+                    // It expects landmarks as normalized 0-1
+                    // Options for style
+                    const CONNECTIONS = POSE_CONNECTIONS;
+                    drawingUtils.drawConnectors(latestResults.poseLandmarks, CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
+                    drawingUtils.drawLandmarks(latestResults.poseLandmarks, { color: '#FF0000', lineWidth: 2, radius: 3 });
+                }
             }
-            canvasCtx.restore(); // Logic uses normalized, Drawing uses screen.
+            canvasCtx.restore();
+
+            // --- CALORIE TRACKING (NOSE MOVEMENT) ---
+            if (gameState === 'PLAYING' && latestResults && latestResults.poseLandmarks) {
+                const nose = latestResults.poseLandmarks[0];
+                const currentNoseXPx = nose.x * w;
+
+                if (lastNoseX !== null) {
+                    const dist = Math.abs(currentNoseXPx - lastNoseX);
+                    totalMoveDistance += dist;
+                }
+                lastNoseX = currentNoseXPx;
+
+                if (nextPoseType) {
+                    if (!poseDurationMap[nextPoseType]) poseDurationMap[nextPoseType] = 0;
+                    poseDurationMap[nextPoseType] += (dt / 1000);
+                }
+            }
 
             // --- GAME LOGIC ---
             if (gameState === 'PLAYING') {
-
-                // Re-apply mirror for World Objects (Wall)
                 canvasCtx.save();
                 canvasCtx.scale(-1, 1);
                 canvasCtx.translate(-w, 0);
 
-                // State Machine
                 if (subState === 'WAIT') {
                     spawnTimer -= dt;
                     if (spawnTimer <= 0) {
                         subState = 'ACTION';
-                        currentWall = new Wall();
+                        currentWall = new Wall(nextPoseType);
+
+                        if (isTestMode) {
+                            testState.poseIndex++;
+                            if (testState.poseIndex >= GAME_CONFIG.poses.length) {
+                                testState.poseIndex = 0;
+                                testState.currentLaneIndex++;
+                                if (testState.currentLaneIndex >= testState.laneOrder.length) {
+                                    testState.currentLaneIndex = 0;
+                                }
+                            }
+                        }
                     }
                 }
                 else if (subState === 'ACTION') {
                     if (currentWall) {
                         currentWall.update(dt);
-
-                        // Draw Wall
                         currentWall.draw(canvasCtx, w, h);
-
-                        // Draw Floor Marker (Lane Guide)
                         drawLaneMarker(canvasCtx, w, h, currentWall.lane);
 
-                        // Check Collision/Pass
                         if (currentWall.z <= 0) {
                             let success = false;
                             if (latestResults && latestResults.poseLandmarks) {
                                 success = checkCollision(currentWall, latestResults.poseLandmarks);
                             }
 
-                            // Result Processing
                             if (success) {
                                 score++;
                                 scoreDisplay.innerText = "SCORE: " + score;
@@ -1000,20 +975,18 @@
                                 }
                             }
 
-                            // Transition
                             currentWall = null;
                             subState = 'WAIT';
                             spawnTimer = GAME_CONFIG.spawnInterval;
+                            nextPoseType = getNextPoseType();
                         }
                     }
                 }
                 canvasCtx.restore();
             }
 
-            // --- EFFECT OVERLAY (No Mirror needed usually, handled inside) ---
             drawEffectsAndUI(canvasCtx, w, h);
-
-            canvasCtx.restore(); // Undo Shake
+            canvasCtx.restore();
 
             requestAnimationFrame(gameLoop);
         }
@@ -1028,7 +1001,8 @@
             gameState = 'GAMEOVER';
             messageOverlay.style.display = 'block';
             titleText.innerText = "GAME OVER";
-            statusText.innerText = "Final Score: " + score;
+            const kcal = calculateCalories();
+            statusText.innerHTML = `Final Score: ${score}<br><span style="font-size: 0.8em; color: #ffcc00;">Est. Calories: ${kcal} kcal</span>`;
             startInstruction.innerText = 'Press "S" to TRY AGAIN';
             startInstruction.style.display = 'block';
 
@@ -1043,14 +1017,18 @@
             score = 0;
             lives = 3;
             currentSpeed = GAME_CONFIG.initialSpeed;
-            spawnTimer = 2000; // Initial delay
+            spawnTimer = 2000;
 
-            // Reset Test State if needed
             if (isTestMode) {
                 testState.currentLaneIndex = 0;
                 testState.poseIndex = 0;
-                // Maybe keep logs noting it's a test?
             }
+
+            totalMoveDistance = 0;
+            poseDurationMap = {};
+            lastNoseX = null;
+
+            nextPoseType = getNextPoseType();
 
             scoreDisplay.innerText = "SCORE: " + score;
             updateLives();
