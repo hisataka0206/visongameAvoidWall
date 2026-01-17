@@ -151,6 +151,25 @@
             font-weight: bold;
             color: #fff;
         }
+
+        /* GESTURE BUTTON STYLE */
+        #gesture-btn {
+            position: absolute;
+            top: 25%;
+            left: 85%;
+            width: 140px;
+            height: 140px;
+            transform: translate(-50%, -50%);
+            z-index: 1000;
+            /* Above everything */
+            pointer-events: none;
+            transition: transform 0.1s;
+        }
+
+        #gesture-btn.active-pulse {
+            transform: translate(-50%, -50%) scale(1.1);
+            filter: drop-shadow(0 0 15px #00ffff);
+        }
     </style>
 </head>
 
@@ -164,6 +183,20 @@
             <div id="hud">
                 <div id="score-display">SCORE: 0</div>
                 <div id="lives-display">❤️❤️❤️</div>
+            </div>
+
+            <!-- GESTURE BUTTON (Floating above screens) -->
+            <div id="gesture-btn" class="hidden">
+                <svg viewBox="0 0 100 100" width="100%" height="100%">
+                    <circle cx="50" cy="50" r="45" stroke="rgba(255,255,255,0.8)" stroke-width="4"
+                        fill="rgba(0,255,255,0.2)" />
+                    <path id="gesture-progress-path" d="" fill="none" stroke="#ffff00" stroke-width="6"
+                        stroke-linecap="round" />
+                    <text x="50" y="45" text-anchor="middle" fill="white" font-size="14" font-weight="bold"
+                        style="text-shadow: 1px 1px 2px black;">両手タッチ</text>
+                    <text x="50" y="65" text-anchor="middle" fill="#ffff00" font-size="12" font-weight="bold"
+                        style="text-shadow: 1px 1px 2px black;">START</text>
+                </svg>
             </div>
         </div>
 
@@ -233,7 +266,14 @@
         const titleText = document.getElementById('title-text');
         const messageOverlay = document.getElementById('message-overlay');
         const scoreDisplay = document.getElementById('score-display');
+
         const livesDisplay = document.getElementById('lives-display');
+        const gestureBtn = document.getElementById('gesture-btn');
+        const gestureProgressPath = document.getElementById('gesture-progress-path');
+
+        // Gesture State
+        let gestureProgress = 0;
+        const gestureMax = 60;
 
         // Game State
         let gameState = 'LOADING'; // LOADING, MENU, PLAYING, GAMEOVER
@@ -819,6 +859,92 @@
             }
         }
 
+
+        // --- GESTURE LOGIC ---
+        function updateGestureLogic(landmarks) {
+            // UI VISIBILITY
+            if (gameState === 'MENU' || gameState === 'GAMEOVER') {
+                gestureBtn.classList.remove('hidden');
+                // Label Update
+                const label = gestureBtn.querySelector('text:last-of-type');
+                if (label) label.textContent = (gameState === 'MENU' ? "START" : "RETRY");
+            } else {
+                gestureBtn.classList.add('hidden');
+                return;
+            }
+
+            if (!landmarks) return;
+
+            // HTML Button Position (Top Right)
+            // CSS is Top 25%, Left 85%
+            const btnX = canvasElement.width * 0.85;
+            const btnY = canvasElement.height * 0.25;
+            const btnR = 70; // Approx matching visual size
+
+            // Hands Indices
+            const leftHand = landmarks[19]; // L Index
+            const rightHand = landmarks[20]; // R Index
+
+            if (!leftHand || !rightHand) return;
+
+            // Mirror Logic Fix:
+            // The canvas is mirrored (scale -1, 1). To match visual UI at Right (0.85),
+            // we must treat raw landmark X=0 (Camera Left) as Visual Right.
+            // visualX = (1 - rawX) * width
+            const lx = (1 - leftHand.x) * canvasElement.width;
+            const ly = leftHand.y * canvasElement.height;
+            const rx = (1 - rightHand.x) * canvasElement.width;
+            const ry = rightHand.y * canvasElement.height;
+
+            const distL = Math.hypot(lx - btnX, ly - btnY);
+            const distR = Math.hypot(rx - btnX, ry - btnY);
+
+            let active = false;
+            // Both hands check
+            if (distL < btnR && distR < btnR) {
+                active = true;
+                gestureProgress++;
+                if (gestureProgress > gestureMax) {
+                    gestureProgress = 0;
+                    startGame();
+                }
+            } else {
+                gestureProgress = Math.max(0, gestureProgress - 5);
+            }
+
+            // UPDATE UI
+            if (active) {
+                gestureBtn.classList.add('active-pulse');
+            } else {
+                gestureBtn.classList.remove('active-pulse');
+            }
+
+            // Draw Arc
+            if (gestureProgress > 0) {
+                const ratio = gestureProgress / gestureMax;
+                const angle = ratio * Math.PI * 2;
+
+                // SVG Arc Logic
+                const r = 45;
+                const cx = 50;
+                const cy = 50;
+                const startX = cx;
+                const startY = cy - r;
+
+                // End Angle (Clockwise from top)
+                const endAngle = -Math.PI / 2 + angle;
+                const endX = cx + r * Math.cos(endAngle);
+                const endY = cy + r * Math.sin(endAngle);
+
+                const largeArc = angle > Math.PI ? 1 : 0;
+
+                const d = `M ${startX} ${startY} A ${r} ${r} 0 ${largeArc} 1 ${endX} ${endY}`;
+                gestureProgressPath.setAttribute('d', d);
+            } else {
+                gestureProgressPath.setAttribute('d', '');
+            }
+        }
+
         // --- MAIN LOOP ---
         function gameLoop(timestamp) {
             const dt = timestamp - lastTime || 0;
@@ -870,6 +996,14 @@
                 } else {
                     latestResults = null;
                 }
+            }
+
+            // GESTURE UPDATE
+            if (latestResults && latestResults.poseLandmarks) {
+                updateGestureLogic(latestResults.poseLandmarks);
+            } else if (gameState === 'MENU' || gameState === 'GAMEOVER') {
+                // Even if no pose, ensure UI shows up (though inactive)
+                updateGestureLogic(null);
             }
 
 
